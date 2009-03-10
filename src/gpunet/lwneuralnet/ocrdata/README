@@ -1,0 +1,12 @@
+This directory contains the original version of the database
+"Optical recognition of handwritten digits" by E.Alpaydin and
+C.Kaynak, Department of Computer Engineering, Bogazici University,
+80815 Istanbul, Turkey.
+
+It was downloaded from the UCI Machine Learning Repository
+(C.L.Blake and C.J.Merz. "UCI Repository of machine learning
+databases" <http://www.ics.uci.edu/~mlearn/MLRepository.html>.
+University of California, Department of Information and
+Computer Science, Irvine CA, USA).
+
+ -- Peter van Rossum <petervr@users.sourceforge.net>, 6 October 2003

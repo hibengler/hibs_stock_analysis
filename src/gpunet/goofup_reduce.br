@@ -1,0 +1,28 @@
+/* This test fails on 7800GS windows dx9.  succeeds 7800GS ogl and cpu */
+
+reduce void kernel_reduce_sum(float x<>, reduce float result<>) {
+  result += x;
+}
+
+main() {
+  float *bigmat;
+  float mat<47>;
+  float t1;
+  float total1<1>;
+
+  bigmat=(float *)calloc(sizeof(float),47);
+
+  bigmat[46]=1000000.; 
+  streamRead(mat,bigmat);
+  kernel_reduce_sum(mat,total1);
+  streamWrite(total1,&t1);
+  if (t1 != 1000000.) printf("Oh no! %f should be 1000000.\n",t1);
+
+  bigmat[46]=0.;  
+  bigmat[44]=1000000.;
+  streamRead(mat,bigmat);
+  kernel_reduce_sum(mat,total1);
+  streamWrite(total1,&t1);
+  if (t1 != 1000000.) printf("Oh no again! %f should be 1000000.\n",t1);  
+
+}

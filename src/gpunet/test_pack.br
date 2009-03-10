@@ -1,0 +1,22 @@
+
+GNET_NEW_PACKED_TS(input,8000002);
+{
+float *t;
+int i;
+t = (float *)malloc(sizeof(float)*8000002);
+for (i=0;i<8000002;i++) {
+  t[i]=i+1;
+  }
+printf("loading pack\n");
+load_pack(input,t);
+for (i=0;i<8000002;i++) {t[i]=-1.f;}
+printf("saving pack\n");
+save_pack(input,t);
+for (i=0;i<8000002;i++) {if (i+1 != t[i]) printf("error! i %d t %3.2f\n",i,t[i]);}
+for (i=0;i<8000002;i++) {t[i]=-1.f;}
+input->offset=1;
+printf("saving pack 2\n");
+save_pack(input,t);
+for (i=0;i<8000002;i++) {if (i+2 != t[i]) printf("2error! i %d t %3.2f\n",i,t[i]);}
+}
+GNET_END_PACKED_TS;

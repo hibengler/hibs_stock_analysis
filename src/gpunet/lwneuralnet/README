@@ -1,0 +1,36 @@
+Lightweight Neural Network
+
+This is a lightweight implementation of a backpropagation neural network
+routine in C. It doesn't do anything fancy: no millions of different
+types of neural networks, no graphical user interface, just the routines
+for computing and training a backpropagation neural network.
+
+The easiest way to use these routines in an application is to simply
+drop the source (network.c, interpolation.c and lwneuralnet.h in the
+source directory) in your own source tree and '#include
+"lwneuralnet.h"'.  Alternatively, you can call './configure', 'make',
+and (as root) 'make install' to properly install lwneuralnet in
+/usr/local.  Then you can '#include <lwneuralnet.h>' and link with the
+library using '-llwneuralnet'.
+
+The files in the directory 'tests' test the operation of the library.
+They also serve as example on how to use it.
+
+The files in the directory 'ocr' form an example application: they
+train and compute a neural network to recognize handwritten digits.
+Because of its size and stability, the training data for this
+application is distributed separately.  To download it, go to
+<http://prdownloads.sourceforge.net/lwneuralnet/lwneuralnet-ocrdata-1.1.tar.gz?download>.
+
+This is version 0.9 of the lwneuralnet library. The latest
+version is always available from the lwneuralnet homepage
+at SourceForge <http://lwneuralnet.sourceforge.net>.
+
+This library, its utility programs, and example application
+(i.e. everything in this distribution) are licenced under the GNU Lesser 
+General Public Licence. Please see the file LICENSE for details.
+
+Thanks goes to Robert Locke for various suggestions on improving the
+code.
+
+ -- Peter van Rossum <petervr@users.sourceforge.net>, 27 July 2005

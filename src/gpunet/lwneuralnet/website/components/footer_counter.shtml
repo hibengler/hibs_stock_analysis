@@ -1,0 +1,26 @@
+<!-- start page footer -->
+<table width="100%" border="0" cellspacing="0" cellpadding="0">
+  <tbody>
+    <tr bgcolor="#999999">
+      <td><img src="images/blank.gif" alt="" border="0" width="1" height="1"></td>
+    </tr>
+    <tr align="center" valign="middle">
+      <td height="50">
+        <table cellpadding="0" cellspacing="0" border="0" width="100%">
+          <tbody>
+            <tr>
+              <td align="left"><small>Copyright &copy; 2003-2005<br>Peter van Rossum</small></td>
+              <td align="center"><a href="http://sourceforge.net"><img src="http://sourceforge.net/sflogo.php?group_id=88387&amp;type=1" width="88" height="31" border="0" alt="SourceForge"></a></td>
+	      <td align="center"><img src="http://counter.digits.com/wc/-d/4/-z/-r/lwneuralnet" alt="WebCounter" align="middle" width=40 height=20 border=0><small> since 29 September 2003</small><br><a href="http://www.digits.com"><img src="images/webcounter.gif" align="middle" width="170" height="15" border="0" alt="WebCounter"></a></td>
+              <td align="right"><small>Updated<br><!--#config timefmt="%e %B %Y" --><!--#echo var="LAST_MODIFIED" --></small></td>
+            </tr>
+          </tbody>
+        </table>
+      </td>
+    </tr>
+    <tr bgcolor="#999999">
+      <td><img src="images/blank.gif" alt="" border="0" width="1" height="1"></td>
+    </tr>
+  </tbody>
+</table>
+<!-- end page footer -->

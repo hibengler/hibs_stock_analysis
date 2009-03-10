@@ -1,0 +1,83 @@
+struct gpu_packed_ts input_pack;
+struct gpu_packed_ts output_pack;
+total_input_size = net->input_layer->no_of_neurons;
+total_output_size = net->output_layer->no_of_neurons;
+
+chunk_input_size = (total_input_size+3)/4;
+chunk_output_size = (total_output_size+3)/4;
+chuck_input_last_floats = total_input_size % 4;
+if (chuck_input_last_floats==0) chuck_input_last_floats=4;
+chuck_output_last_floats = total_output_size % 4;
+if (chuck_output_last_floats==0) chuck_output_last_floats=4;
+
+
+bigin_cols = 2048;
+bigin_rows = (chunk_input_size + 2047) / 2048;
+bigin_last_cols = chunk_input_size % 2048;
+if (!bigin_last_cols) bigin_last_cols = 2048;
+
+bigtarget_cols = 2048;
+bigtarget_rows = (chunk_input_size + 2047) / 2048;
+bigtarget_last_cols = chunk_input_size % 2048;
+if (!bigtarget_last_cols) bigin_last_cols = 2048;
+
+/* there should be a check to see if target is inside input cuz if it is,  then we should combine the inputs together */
+bigtarget_offset=0;
+{
+  float4 big_input<biginput_cols,biginput_rows>;
+  float4 big_target<biginput_rows,biginput_cols>;
+  float4 temp;
+  float *ix;
+  
+  /* we load the input in three chunks
+   chunk 1 -  the full rows
+   chunk 2 -  the full column/rows on the last row.
+   chunk 3 -  the very last item.
+   
+   same with target
+   */
+ if (biginput_rows >1) {
+   streamRead(big_input.domain(int2(0,0),int2(biginput_rows-1,biginput_cols)),
+               (float4 *)(inputx));
+   }
+ if (bigin_last_cols >1) {
+   streamRead(big_input.domain(int2(biginput_rows-1,0),int2(biginput_rows,bigin_last_cols-1)),
+              (float4 *)(inputx + 4*((biginput_rows-1)*biginput_cols)));
+   }
+ temp = float4(0.f,0.f,0.f,0.f );
+ ix = inputx + 4*((biginput_rows-1)*biginput_cols + bigin_last_cols-1);
+ if (chuck_input_last_floats==4) temp = float4(ix[0],ix[1],ix[2],ix[3]);
+ else if (chuck_input_last_floats==3) temp = float4(ix[0],ix[1],ix[2],0.f);
+ else if (chuck_input_last_floats==2) temp = float4(ix[0],ix[1],0.f,0.f);
+ else temp = float4(ix[0],0.f,0.f,0.f);
+ streamRead(big_input.domain(int2(biginput_rows-1,bigin_last_cols-1),int2(biginput_rows,bigin_last_cols)),
+              &temp);
+
+ 
+ if (bigtarget_rows >1) {
+   streamRead(big_target.domain(int2(0,0),int2(bigtarget_rows-1,bigtarget_cols)),
+               (float4 *)(targetx));
+   }
+ if (bigtarget_last_cols >1) {
+   streamRead(big_target.domain(int2(bigtarget_rows-1,0),int2(bigtarget_rows,bigtarget_last_cols-1)),
+              (float4 *)(targetx + 4*((bigtarget_rows-1)*bigtarget_cols)));
+   }
+ temp = float4(0.f,0.f,0.f,0.f );
+ ix = targetx + 4*((bigtarget_rows-1)*bigtarget_cols + bigtarget_last_cols-1);
+ if (chuck_output_last_floats==4) temp = float4(ix[0],ix[1],ix[2],ix[3]);
+ else if (chuck_output_last_floats==3) temp = float4(ix[0],ix[1],ix[2],0.f);
+ else if (chuck_input_last_floats==2) temp = float4(ix[0],ix[1],0.f,0.f);
+ else temp = float4(ix[0],0.f,0.f,0.f);
+ streamRead(big_target.domain(int2(bigtarget_rows-1,bigtarget_last_cols-1),int2(bigtarget_rows,bigtarget_last_cols)),
+              &temp);
+ 
+ 
+ /* OK,  We now have loaded arrays of inputs and targets (minus accuracy target information since that is derived)
+  packed into two (and someday maybee one) honking big 2 dimensional arrays of float4's.  
+  And we are going to chunk this into the input and target sections appropriately.
+  And we are going to train this sucker 
+  over and over again
+  And later on we are going to train an array of these guys over and over
+  and then we have nirvana!
+  */
+  

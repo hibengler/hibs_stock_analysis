@@ -1,0 +1,66 @@
+This directory contains an example application for the lwneuralnet
+library: programs to train a neural network to recognize handwritten
+digits. Type 'make' to compile the application.
+
+Training data
+-------------
+
+In order to use this application, you might also need data to train the
+neural network.  This is distributed separately from the lwneuralnet
+library itself. It can be downloaded from lwneuralnet's homepage
+<http://lwneuralnet.sourceforge.net> or just go to
+<http://sourceforge.net/project/showfiles.php?group_id=88387&release_id=189318>.
+The remainder of this README assumes that you have put the training data
+in a subdirectory called 'ocrdata'.
+
+Input and output
+----------------
+
+The data files contain 32x32 bit handwritten characters.  The
+application divides this in 64 4x4 blocks and counts the number of 1's
+in each block. These 64 sums (actually, these sums divided by 16) are
+the inputs of the neural network. There are 10 outputs, one
+corresponding to each digit. An output is supposed to be 1 if it is the
+right digit, 0 otherwise.
+
+Training
+--------
+
+To train a neural network to recognize characters, the command
+'ocr_train' is used. The easiest way to call this is
+
+  ocr_train -f network.net ocrdata/optdigits.training.gz \
+            ocrdata/optdigits.validation.gz
+
+This will load the network 'network.net' (which should have 64 inputs
+and 10 outputs), trains it using the digits in 'optdigits.training.gz'
+and keeps training until the total error on 'optdigits.validation.gz'
+doesn't decrease anymore.
+
+Try 'ocr_train --help' for options - there are options to create a
+network (-c), to train the network in batches (-b), to limit training
+until the error is small (-e), and others.
+
+Validation
+----------
+
+The program 'ocr_validate' is used to see what the result of a neural
+network is on a set of digits. It is called as
+
+  ocr_validate network.net ocrdata/optdigits.validation.gz
+
+This will compute the network for all the digits in
+'optdigits.validation.gz'. For each of those digits, it display the
+digit it actually is, the 10 outputs of the neural network, the digit
+that the network thinks it is (the one with the highest output), and
+whether or not that was correct. It also displays the number of error
+the network made.
+
+Networks
+--------
+
+The files network1.net and network2.net are pre-trained networks. The
+first one has 32 hidden neurons, the second one has two hidden layers,
+each with 16 neurons. They both make in the order of 25 mistakes out of
+946 digits on 'opdigits.validation.gz' (this varies, as these network
+are randomly generated).

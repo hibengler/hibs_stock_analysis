@@ -1,0 +1,26 @@
+reduce void matrix_mult (reduce float4 a<>, float4 b<>) {
+a=float4 (a.x, a.y, a.z, a.w);
+}
+int main () {
+float4 matrices<1,100>; 
+float4 result_stream<1,1>;
+float4 result; float4 data_a[10][10]; int i,j;
+for (i=0; i<10; i++) {
+for (j=0; j<10; j++) {
+data_a[i][j].x=(float)(1000+i*10+j);
+data_a[i][j].y=(float)(2000+i*10+j);
+data_a[i][j].z=(float)(3000+i*10+j);
+data_a[i][j].w=(float)(4000+i*10+j);
+}
+}
+result = float4 (0.0f, 0.0f, 0.0f, 0.0f);
+
+streamRead(matrices,data_a);
+matrix_mult(result_stream,matrices);
+streamWrite(result_stream,&result);
+
+printf("result is:\n[%3.0f %3.0f]\n[%3.0f %3.0f]\n",result.x,result.y,result.z,result.w);
+
+return 0;
+}
+

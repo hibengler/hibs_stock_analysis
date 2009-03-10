@@ -1,0 +1,198 @@
+\documentclass{article}
+\usepackage{amsmath}
+
+\newcommand{\fskip}{3pt}
+
+\newcommand{\act}[2]{\alpha^{#1}_{#2}}
+\newcommand{\out}[2]{o^{#1}_{#2}}
+\newcommand{\wgt}[3]{w^{#1}_{{#2}{#3}}}
+\newcommand{\dff}[2]{\gamma^{#1}_{#2}}
+\newcommand{\err}[2]{E^{#1}_{#2}}
+\newcommand{\tar}[1]{\tau_{#1}}
+\newcommand{\ger}{E}
+\newcommand{\oer}[1]{E_{#1}}
+
+\newcommand{\der}[2]{\frac{\partial #1}{\partial #2}}
+
+\title{Backprogation neural networks}
+\author{Peter van Rossum}
+\begin{document}
+
+\section{Forward propagation}
+
+
+
+\section{Activation function}
+
+The activation function used is
+\begin{equation*}
+  \sigma(x) = \frac{1}{1 + e^{-x}}
+\end{equation*}
+When training, it turns out that we need the derivative of $\sigma$.
+For this particular function, the derivative has the nice property
+that
+\begin{align*}
+  \sigma'(x) & = \frac{e^{-x}}{(1 + e^{-x})^2} \\
+  & = \left( \frac{1}{\sigma(x)} - 1 \right) \sigma(x)^2 \\
+  & = \sigma(x) \bigl( 1 - \sigma(x) \bigr).
+\end{align*}
+This makes it particularly easy to compute $\sigma'(x)$ if
+$\sigma(x)$ has been computed earlier already.
+\medskip
+
+In the {\tt lwneuralnet}-library, $\sigma$ is implemented by
+the function {\tt sigma()}. Instead of actually doing the computation,
+this function uses a table lookup as an approximation. This turns out
+to be acurate enough for a neural network and is of course much faster.
+
+\section{Backpropagation}
+
+The global error is defined as
+\begin{equation*}
+  \ger := \frac{1}{2} \sum_{i<m_{n-1}} (\out{n-1}{i} - \tar{i})^2
+\end{equation*}
+
+We now want to consider the global error as a function of the weights
+of the network. The goal is to change the weights in such a way that the
+global error (for these particular inputs $\out{0}{i}$ (for $i < m_0$)
+and these particular targets $\tar{j}$ (for $j < m_{n-1}$)) becomes smaller.
+
+To do this, we first want to see how the global error changes if the
+weights change and in order to that we want to compute all the partial
+derivatives $\smash{\der{\ger}{\wgt{p}{i}{j}}}$ (for $2 \leq p \leq n-1$, $i < m_{p-1}$,
+$j < m_p$).
+
+The global error depends on the outputs $\smash{\out{n-1}{k_{n-1}}}$ of
+the output layer. These depend in turn on the outputs
+$\smash{\out{n-2}{k_{n-2}}}$ of the previous layer, etc. Hence, by the
+chain rule
+
+\begin{align*}
+  \der{\ger}{\wgt{p}{i}{j}}
+  & = \smash{\sum_{\substack{k_{n-1}, \dots,\\ k_p}}}
+      \der {E}                   {\out{n-1}{k_{n-1}}}
+      \der {\out{n-1}{k_{n-1}}}  {\out{n-2}{k_{n-2}}}
+      \der {\out{n-2}{k_{n-2}}}  {\out{n-3}{k_{n-3}}}
+      \dots
+      \der {\out{p+1}{k_{p+1}}}  {\out{p}{k_{p}}}
+      \der {\out{p}{k_{p}}}      {\wgt{p}{i}{j}}
+\end{align*}
+Now
+\begin{align*}
+  \der {E} {\out{n-1}{k_{n-1}}}
+  & = \der { ( \frac{1}{2} \sum_l ( \out{n-1}{l}-\tar{l} )^2) ) } 
+           { \out{n-1}{k_{n-1}} } 
+  = \out{n-1}{k_{n-1}} - \tar{k_{n-1}} \\
+  & = \oer{k_{n-1}}, \\[\fskip]
+  \der {\out{q}{k_q}} {\out{q-1}{k_{q-1}}}
+  & = \der {\sigma(\act{q}{k_q})} {\out{q-1}{k_{q-1}}}
+  = \dff{q}{k_q} \der {\act{q}{k_q}} {\out{q-1}{k_{q-1}}}
+  = \dff{q}{k_q} \der {(\sum_l \wgt{q}{l}{k_q} \out{q-1}{k})} {\out{q-1}{k_{q-1}}} \\
+  & = \dff{q}{k_q} \wgt{q}{k_{q-1}}{k_q} \\[\fskip],
+  \der {\out{p}{k_p}} {\wgt{p}{i}{j}}
+  & = \der {\sigma(\act{p}{k_p})} {\wgt{p}{i}{j}}
+  = \dff{p}{k_p} \der {\act{p}{k_p}} {\wgt{p}{i}{j}}
+  = \dff{p}{k_p} \der {(\sum_l \wgt{p}{l}{k_p} \out{p-1}{l})} {\wgt{p}{i}{j}} \\
+  & = \begin{cases}
+         \dff{p}{j} \out{p-1}{i} & \text{if $j = k_p$} \\
+	 0 & \text{otherwise,}
+      \end{cases}
+\end{align*}
+which gives
+\begin{align*}
+  \der{\ger}{\wgt{p}{i}{j}} =
+  \begin{cases}
+    \oer{j} \dff{n-1}{j} \out{n-2}{i} \quad\text{if $p = n-1$} \\[2pt]
+    \displaystyle\smash{\sum_{\substack{k_{n-1}, \dots,\\ k_{p+1}}}}
+    \oer{k_{n-1}}
+    \dff{n-1}{k_{n-1}} \wgt{n-1}{k_{n-1}}{k_{n-2}}
+    \dots
+    \dff{p+2}{k_{p+2}} \wgt{p+2}{k_{p+2}}{k_{p+1}}
+    \dff{p+1}{k_{p+1}} \wgt{p+1}{k_{p+1}}{j}
+    \dff{p}{j}
+    \out{p-1}{i} \\
+    & \llap{if $1 \leq p < n-1$}
+  \end{cases}
+\end{align*}
+Note how this naturally splits into a part depending $j$ and a small part 
+depending on $i$. Define
+\begin{equation*}
+  \err{p}{j} :=
+  \begin{cases}
+    \oer{j} \dff{n-1}{j} \quad\text{if $p = n-1$} \\[2pt]
+    \smash{\sum_{\substack{k_{n-1}, \dots,\\ k_{p+1}}}}
+    \oer{k_{n-1}}
+    \dff{n-1}{k_{n-1}} \wgt{n-1}{k_{n-1}}{k_{n-2}}
+    \dots
+    \dff{p+2}{k_{p+2}} \wgt{p+2}{k_{p+2}}{k_{p+1}}
+    \dff{p+1}{k_{p+1}} \wgt{p+1}{k_{p+1}}{j}
+    \dff{p}{j} \\
+    & \llap{if $1 \leq p < n-1$}
+  \end{cases}
+\end{equation*}
+Then for $1 \leq p \leq n$:
+\begin{align*}
+  \der{\ger}{\wgt{p}{i}{j}}
+  & = \err{p}{j} \out{p-1}{i}.
+\end{align*}
+Furthermore, it follows that
+\begin{equation*}
+  \err{p}{j} =
+  \begin{cases}
+    \oer{j} \dff{n-1}{j} 
+    & \text{if $p = n-1$} \\
+    \dff{p}{j} \sum_{k=1}^{m_{p+1}} \err{p+1}{k} \wgt{p+1}{j}{k}
+    & \text{if $1 \leq p < n-1$.}
+  \end{cases}
+\end{equation*}
+This can be used to compute the values of $\err{p}{j}$. First for $p =
+n-1$ using the first clause, and then successively for $p = n-2$, $p =
+n-3$, $\dots$, $p = 2$ using the second clause. In this way the output
+errors $\oer{j}$ seem to propagate backwards through the network, which
+is what gives the backpropagation algorithm its name.
+\medskip
+
+In the {\tt lwneuralnet}-library, the values of $\smash{\err{p}{j}}$ are stored as
+{\tt net->layer[{\it p}].\allowbreak neuron[{\it j}].error}.  The values of
+$\smash{\err{n-1}{j}}$ are set by {\tt net\_compute\_\allowbreak
+global\_\allowbreak error()} and {\tt backward\_pass()} repeatedly calls {\tt
+backpropagate\_layer()} to compute the values of $\err{n-2}{j}$, $\err{n-3}{j}$,
+$\dots$, $\err{2}{j}$.
+\medskip
+
+We now change every weight $\wgt{p}{i}{j}$ to $\wgt{p}{i}{j} + \eta
+\der{\ger}{\wgt{p}{i}{j}}$ for some small positive value of $\eta$.
+(If we would repeatedly do this, for the same inputs and targets, the
+global error for these particular inputs and targets would be minimized. ls
+
+
+The value of $\eta$ used is called the learning rate of the neural network.
+
+\section{Overview of variables}
+
+The following table gives an overview of the variable names used in this paper
+and the corresponding variable names used in the implementation in the {\tt
+lwneuralnet}-library.
+\begin{center}
+\begin{tabular}{|l|l|}
+  \hline
+  $n$             & {\tt net->no\_of\_layers} \\[\fskip]
+  $m_p$           & {\tt net->layer[{\it p}]->no\_of\_neurons} \\[\fskip]
+  $\wgt{p}{i}{j}$ & {\tt net->layer[{\it p}]->neuron[{\it j}]->weight[{\it i}]}
+                    \\[\fskip]
+                  & {\tt net->layer[{\it p}]->neuron[{\it j}]->delta[{\it i}]}
+                    \\[\fskip]
+  $\act{p}{i}$    & (not stored) \\[\fskip]
+  $\out{p}{i}$    & {\tt net->layer[{\it p}]->neuron[{\it i}]->output} \\[\fskip]
+  $\tar{i}$       & (not stored) \\[\fskip]
+  $\dff{p}{i}$    & (not stored) \\[\fskip]
+  $\err{p}{i}$    & {\tt net->layer[{\it p}]->neuron[{\it i}]->error} \\[\fskip]
+  $\oer{i}$	  & (not stored) \\[\fskip]
+  $\ger$          & {\tt net->global\_error} \\[\fskip]
+                  & {\tt net->learning\_rate} \\[\fskip]
+	          & {\tt net->momentum} \\[\fskip]
+  \hline
+\end{tabular}
+\end{center}
+
+\end{document}

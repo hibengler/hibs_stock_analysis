@@ -1,0 +1,3422 @@
+/* fast.br -- the fast implementation of nnet
+Hibbard Engler Nov 2006
+
+
+This uses brookGPU to attempt to speed up the neural netowrk software.
+
+net_compute_output_error_fast 
+and
+net_compute_fast
+
+both work,  but they are not faster yet.  Hmmm.
+
+net_compute_fast_noback
+will compute faster because all levels are done in one swoop on the GPU.
+
+net_train_fast
+kinda works,  but the numbers coming back are a bit different.  I need to debug.
+
+*/
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+#include <math.h>
+
+
+#include "lwneuralnet.h"
+#include "lwneuralgpu.hpp"
+
+/* kernel functions */
+/* The kernel functions are used to perform basica calculations on the GPU.
+They are called with streams (basically arrays stored on the GPU),  and these
+streams are aligned to be equivilant (i.e if streem a is 1x5 and stream b is 
+  4x5 then stream a is expanded to look like a 4x5 with the same elements in all 4 
+elements.)
+
+Streams,  in theory,  do all their work on the GPU itself.  a good GPU program,
+from what I see,  has minimum transfers of stream data and maximum computations inside the 
+stream.
+
+
+streams are kinda generic,  so a kernel can be used for a 1d,  or a 2d stream.
+
+Reduction streams are used to bring an array down to size.
+*/
+
+
+
+
+
+/* These definitions save alot of time
+DOMINO - does the a=b.domain -- and unreverses the order so that it is the same as the declared order.
+DOMINOR - does like DOMINO,  but keeps the reverse order -- useful when changing existign code and making sure that 
+           you don't have to reverse the arguments back by hand.
+STREAM4 - a 2 dimenstional stream of float4.
+STREAM4_1D - a 1 dimenstional stream of float4
+STREAM1 - a 2 dimenstional stream of float1
+
+These have to be used because we are using macros to define sets of streams,  and the brook <> extensions do not
+work within a macro.
+*/
+
+#define DOMINO(a,b,x1,y1,x2,y2) ::brook::stream a=b.domain(int2(y1,x1),int2(y2,x2))
+#define DOMINOR(a,b,y1,x1,y2,x2) ::brook::stream a=b.domain(int2(y1,x1),int2(y2,x2))
+#define STREAM4(a,x1,y1) ::brook::stream a(::brook::getStreamType((float4 *)0),x1,y1,-1)
+#define STREAM4_1D(a,x1) ::brook::stream a(::brook::getStreamType((float4 *)0),x1,-1)
+#define STREAM1(a,x1,y1) ::brook::stream a(::brook::getStreamType((float *)0),x1,y1,-1)
+
+
+
+
+
+
+kernel void kernel_mul( float a<>,float b<>, out float c<> ) {c = a*b;}
+
+kernel void kernel_zero(  out float c<> ) {c = 0.f;}
+
+kernel void kernel_one(  out float c<> ) {c = 1.f;}
+
+kernel void kernel_add( float a<>,float b<>, out float c<> ) {  c = a+b;}
+kernel void kernel_add_three (float a<>, float b <>, float c<>,out float d<>) {d=a+b+c;}
+kernel void kernel_add_four (float a<>, float b <>, float c<>,float d<>,out float e<>) {e=a+b+c+d;}
+
+kernel void kernel_subtract( float a<>,float b<>, out float c<> ) {  c = a-b;}
+
+
+/* note - kernel reduce has a bug in it for weird sized shapes. */
+reduce void kernel_reduce(float x<>, reduce float result<>) {  result = result + x;}
+
+/* used to compute the global error */
+kernel void kernel_sum_square_over_2(float x<>, out float result<>) {
+  result = x* x  * 0.5f;
+}
+
+
+
+/* generic copy of data */
+kernel void copy (float a<>, out float b<>) {
+ b = a;
+ }
+
+
+void valid_reduce_sum(float a<>,int rmax,int csize,
+                   float b<>)
+/* this reduces destructively by hand.  We do this because there is a bug in reducing on dx9 
+First the bug:
+If you resuze something the size 47,  position 46 is double counted,  and position 44 is not counted.
+This ocurrs at many oddly shaped reductions firther on.
+
+Now this algorithm:
+We take the size of the array,  if it is bigger than 4,  we divide into 4 segments (with posible remainder left alone).
+Each of the 4 segments is added together and destructively stored in the 4th segment,  Then we loop again with
+trunc(the original size /4) + remainder as the new size.
+Drawback:  the remainders are not summed as evenly as the rest, so if we are dealing with a large matrix,  some resolution
+  might be lost:  1000000 + 0.25 = 1000000.  But since we are reducing by thouseands,not millions,  things should be ok.
+
+If the size is <4 then add them all together and place them into the output.
+
+Example:
+Size 47
+47/4 = 11
+
+add 0-11 11-22 22-33 33-44 into 33-44
+New size 33-47 = 14
+14/4 = 3
+add 33-36 36-39 39-42 42-45 into 42-45
+new size 42-47 = 5
+5/4= 1
+add 42-43 43-44 44-45 45-46 into 45-46
+new size 46-47 = 2
+
+Add 46 + 47 into result
+
+*/
+{
+int i;
+
+int rmin=0;
+int rsize = rmax - rmin;
+while (rsize >24) {
+  int offset = rsize>>2;
+  
+  
+  kernel_add_four(a.domain(int2(rmin,0),int2(rmin+offset,csize)),
+       a.domain(int2(rmin+offset,0),int2(rmin+offset+offset,csize)),
+        a.domain(int2(rmin+offset+offset,0),int2(rmin+offset*3,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)) );
+  
+  rmin = rmin + offset*3;
+  rsize = rmax - rmin;
+  
+    
+  }
+{
+float x<csize,rsize>;
+copy(a.domain(int2(rmin,0),int2(rmax,csize)),x);  
+kernel_reduce(x,b);
+}
+
+}
+
+
+kernel void kernel_transpose (float inx[][], out float result<>) {
+result=inx[indexof result.yx];
+
+}
+
+kernel void kernel_expand_f(float4 inx[][], float4 decoder[],float startpoint,out float result<>) {
+float4 p2;
+float pos;
+float chunkpos;
+float slot;
+float4 temp;
+p2 = indexof result;
+pos =p2.y + p2.x + fmod(startpoint,4.f);
+chunkpos = (pos-2.f) * 0.25f;
+slot = fmod(pos,4.f);
+temp = inx[0][chunkpos] * decoder[slot];
+result = temp.x + temp.y + temp.z + temp.w ;
+}
+
+kernel void kernel_compute_accuracy(float output[][],float target[][],
+  out float accuracy<>,float accuracy_first_output,float accuracy_skip_offset,float accuracy_start) {
+float pos1; 
+float pos2;
+float a;
+float b;
+pos1 = indexof accuracy.y;
+pos2 = indexof accuracy.x - accuracy_start; /* domain indexof is really the indexof of the base stream */
+a = output[pos1][pos2*accuracy_skip_offset+accuracy_first_output];
+b = target[pos1][pos2*accuracy_skip_offset+accuracy_first_output];
+accuracy = abs(a-b);
+}
+
+  
+  
+/* this reduces in the inverse dimension */
+void valid_reduce_sum_inverse(float a<>,int cmax,int rsize,
+                   float b<>)
+{
+int i;
+
+int cmin=0;
+int csize = cmax - cmin;
+
+
+while (csize >24) {
+  int offset = csize>>2;
+  kernel_add_four(a.domain(int2(0,cmin),int2(rsize,cmin+offset)),
+       a.domain(int2(0,cmin+offset),int2(rsize,cmin+offset+offset)),
+        a.domain(int2(0,cmin+offset+offset),int2(rsize,cmin+offset*3)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)) );
+  
+  cmin = cmin + offset*3;
+  csize = cmax - cmin;
+  
+  }  
+{
+float x<csize,rsize>;
+copy(a.domain(int2(0,cmin),int2(rsize,cmax)),x);
+
+kernel_reduce(x,b);
+}
+}
+
+
+
+kernel void kernel4_zero(out float4 result<>) {
+result=0.f;
+}
+
+                              
+                              
+                              
+                              
+                              
+                              
+
+kernel void kernel_compress_to_float4(float a[][],out float4 result<>) 
+{
+float2 i;
+float4 q;
+i = indexof result.xy;
+i.x = i.x *4.f;
+q.x = a[i];
+i.x = i.x + 1.0f;
+q.y = a[i];
+i.x = i.x + 1.0f;
+q.z = a[i];
+i.x = i.x + 1.0f;
+q.w = a[i];
+result=q;
+}
+
+
+/* kernel functions for the activation and erro computation */
+
+kernel void kernel_identity( float a<>,out float c<> ) {
+  c = a;
+}
+
+kernel void kernel_d_identity( float a<>,out float c<> ) {
+  c = 1.0f;
+}
+
+
+
+
+kernel void kernel_sigma( float a<>,out float c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+kernel void kernel_d_sigma(float sigma_x<>,out float c<>)
+{
+  c = (1.0f - sigma_x) * sigma_x;
+}
+
+
+
+
+kernel void kernel_tanhp( float a<>,out float c<> ) {
+c = tanh(a);
+}
+
+kernel void kernel_d_tanhp (float a<>, out float c <>) {
+c = 1.0f - a * a;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* used to find the new delta to add to the errors -- including momentum */
+kernel void kernel_compute_delta (float learning_rate, float upper_error<>,
+                                   float output<>,
+                                   float momentum,
+                                   float delta<>,
+                                   out float newdelta<>) 
+{
+newdelta = learning_rate * upper_error * output + momentum * delta;
+}
+
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* generic copy of data */
+kernel void copy4 (float4 a<>, out float4 b<>) {
+ b = a;
+ }
+
+
+
+                              
+                              
+                              
+                              
+                              
+                              
+void dump1(float stream<>,int len,char *prefix) {
+float t[20000];
+float sum;
+int i;
+sum=0.f;
+printf("%s ",prefix);
+streamWrite(stream,t);
+for (i=0;i<len;i++) {
+  sum = sum + t[i];
+  if (i<8) printf("%4.2f ",t[i]);
+  }
+printf("\n %s cnt %d sum %f\n\n",prefix,len,sum);
+}                              
+                              
+
+void dump4(float stream<>,int len,char *prefix) {
+float4 t[20000];
+float sum;
+int i;
+sum=0.f;
+printf("%s ",prefix);
+streamWrite(stream,t);
+for (i=0;i<len;i++) {
+  sum = sum + t[i].x + t[i].y + t[i].z + t[i].w;
+  if (i<8) printf("%4.2f,%4.2f,%4.2f,%4.2f ",t[i].x,t[i].y,t[i].z,t[i].w);
+  }
+printf("\n %s cnt %d sum %f\n\n",prefix,len,sum);
+}                              
+                              
+void dump4x(float stream<>,int len,char *prefix) {
+float4 t[20000];
+float sum;
+int i;
+sum=0.f;
+printf("%s ",prefix);
+streamWrite(stream,t);
+for (i=0;i<len;i++) {
+  sum = sum + (t[i].x + t[i].y + t[i].z + t[i].w) *0.25;
+  if (i<8) printf("%4.2f ",(t[i].x+t[i].y+t[i].z+t[i].w)*0.25f);
+  }
+printf("\n %s cnt %d sum %f\n\n",prefix,len,sum);
+}                              
+                              
+                              
+
+void transfer_from_pack(struct gpu_packed_ts *p,int startpoint, int endpoint,float str<>) 
+{
+int startpoint_chunk;
+int endpoint_chunk;
+int startrow;
+int endrow;
+int start_startcol;
+int start_endcol;
+int end_startcol;
+int end_endcol;
+int chunksize;
+/* add the offset appropriately */
+startpoint = startpoint + p->offset;
+endpoint = endpoint + p->offset;
+/* only works for 0-2047 elemrnts */
+if ((endpoint -startpoint) >2048) {
+  fprintf(stderr,"bad call to transfer_from_pack start %d end %d\n",startpoint,endpoint);
+  exit(-2);
+  }
+/* convert from float coordinates to chunk coordinates */
+startpoint_chunk = startpoint >>2;
+endpoint_chunk = (endpoint+3) >>2;
+
+/* now convert to row and column */
+startrow = startpoint_chunk / p->cols;
+start_startcol = startpoint_chunk % p->cols;
+endrow = (endpoint_chunk-1) / p->cols;
+end_endcol = endpoint_chunk % p->cols;
+if (end_endcol ==0) end_endcol = p->cols;
+
+if (startrow!=endrow) {
+  start_endcol = p->cols;
+  end_startcol = 0;
+  
+  copy4(p->all.domain(int2(start_startcol,startrow),int2(start_endcol,startrow+1)),
+    p->chunk_set.domain(int2(0,0),int2(start_endcol-start_startcol,1)));
+    
+  copy4(p->all.domain(int2(end_startcol,endrow),int2(end_endcol,endrow+1)),
+    p->chunk_set.domain(int2(start_endcol-start_startcol,0),
+                        int2(start_endcol-start_startcol+ end_endcol - end_startcol,1)));
+  chunksize = start_endcol-start_startcol+ end_endcol - end_startcol;			
+  }
+else {
+  copy4(p->all.domain(int2(start_startcol,startrow),int2(end_endcol,startrow+1)),
+    p->chunk_set.domain(int2(0,0),int2(end_endcol-start_startcol,1)));
+  chunksize = end_endcol-start_startcol;
+  }
+/* ok great - we have the chunk out  Now we can expand it into the output 
+Cool thing -  the output here could be a 1..n or a n..1! Yeah!
+*/
+kernel_expand_f(p->chunk_set,
+            p->decoder,(float)(startpoint),str);
+}
+                              
+
+			      
+							    
+											  
+void transfer_to_pack(struct gpu_packed_ts *p,int startpoint, int endpoint,float str<>) 
+{
+int startpoint_chunk;
+int endpoint_chunk;
+int startrow;
+int endrow;
+int start_startcol;
+int start_endcol;
+int end_startcol;
+int end_endcol;
+int chunksize;
+/* add the offset appropriately */
+startpoint = startpoint + p->offset;
+endpoint = endpoint + p->offset;
+/* only works for 0-2047 elemrnts */
+if ((endpoint -startpoint) >2048) {
+  fprintf(stderr,"bad call to transfer_to_pack start %d end %d\n",startpoint,endpoint);
+  exit(-2);
+  }
+/* convert from float coordinates to chunk coordinates */
+startpoint_chunk = startpoint >>2;
+endpoint_chunk = (endpoint+3) >>2;
+
+/* now convert to row and column */
+startrow = startpoint_chunk / p->cols;
+start_startcol = startpoint_chunk % p->cols;
+endrow = (endpoint_chunk-1) / p->cols;
+end_endcol = endpoint_chunk % p->cols;
+if (end_endcol ==0) end_endcol = p->cols;
+
+
+
+if (startrow!=endrow) {
+  start_endcol = p->cols;
+  end_startcol = 0;
+  
+  copy4(p->all.domain(int2(start_startcol,startrow),int2(start_endcol,startrow+1)),
+    p->chunk_set.domain(int2(0,0),int2(start_endcol-start_startcol,1)));
+    
+  copy4(p->all.domain(int2(end_startcol,endrow),int2(end_endcol,endrow+1)),
+    p->chunk_set.domain(int2(start_endcol-start_startcol,0),
+                        int2(start_endcol-start_startcol+ end_endcol - end_startcol,1)));
+  chunksize = start_endcol-start_startcol+ end_endcol - end_startcol;			
+  }
+else {
+  copy4(p->all.domain(int2(start_startcol,startrow),int2(end_endcol,startrow+1)),
+    p->chunk_set.domain(int2(0,0),int2(end_endcol-start_startcol,1)));
+  chunksize = end_endcol-start_startcol;
+  }
+/* ok great - we have the chunk out  Now we can expand it into the output 
+Cool thing -  the output here could be a 1..n or a n..1! Yeah!
+*/
+kernel_expand_f(p->chunk_set,
+            p->decoder,(float)(0),p->float_sett.domain(int2(0,0),int2((endpoint_chunk-startpoint_chunk)<<2,1)));
+copy(str,p->float_sett.domain(int2(startpoint&3,0),int2(endpoint-startpoint+(startpoint&3),1)));
+kernel_compress_to_float4(p->float_sett,p->chunk_set.domain(int2(0,0),int2(endpoint_chunk-startpoint_chunk,1)));
+
+if (startrow!=endrow) {
+  start_endcol = p->cols;
+  end_startcol = 0;
+  
+  copy4(    p->chunk_set.domain(int2(0,0),int2(start_endcol-start_startcol,1)),
+      p->all.domain(int2(start_startcol,startrow),int2(start_endcol,startrow+1)));
+
+    
+  copy4(    p->chunk_set.domain(int2(start_endcol-start_startcol,0),
+                        int2(start_endcol-start_startcol+ end_endcol - end_startcol,1)),
+         p->all.domain(int2(end_startcol,endrow),int2(end_endcol,endrow+1)));
+  chunksize = start_endcol-start_startcol+ end_endcol - end_startcol;			
+  }
+else {
+  copy4(p->chunk_set.domain(int2(0,0),int2(end_endcol-start_startcol,1)),
+    p->all.domain(int2(start_startcol,startrow),int2(end_endcol,startrow+1))
+    );
+  chunksize = end_endcol-start_startcol;
+  }
+}
+                              
+
+
+
+                              
+                              
+void packRead(struct gpu_packed_ts *p,const float *x) {
+float *ix;
+float4 temp;
+  /* we load the input in three chunks
+   chunk 1 -  the full rows
+   chunk 2 -  the full column/rows on the last row.
+   chunk 3 -  the very last item.
+   */
+ if (p->rows >1) {
+   streamRead(p->all.domain(int2(0,0),int2(p->cols,p->rows-1)),
+               (float4 *)(x));
+   }
+ if (p->last_cols >1) {
+   streamRead(p->all.domain(int2(0,p->rows-1),int2(p->last_cols-1,p->rows)),
+              (float4 *)(x + 4*((p->rows-1)*p->cols)));
+   }
+ temp = float4(0.f,0.f,0.f,0.f );
+ ix = (float *)x + 4*((p->rows-1)*p->cols + p->last_cols-1);
+ if (p->chunk_last_floats==4) temp = float4(ix[0],ix[1],ix[2],ix[3]);
+ else if (p->chunk_last_floats==3) temp = float4(ix[0],ix[1],ix[2],0.f);
+ else if (p->chunk_last_floats==2) temp = float4(ix[0],ix[1],0.f,0.f);
+ else temp = float4(ix[0],0.f,0.f,0.f);
+ streamRead(p->all.domain(int2(p->last_cols-1,p->rows-1),int2(p->last_cols,p->rows)),
+              &temp);
+}
+                              
+                              
+
+			      
+							    
+											  
+void packWrite(struct gpu_packed_ts *p,float *x) {
+/* caveats-
+ if offset,  needs the overlapping offset to be eqaulor bigger than the underlapping offset
+   (target end >= input end)
+ if offset,  number of floats must be >4 total!
+ */ 
+float *ix;
+float4 temp;
+
+  /* we save the input in three chunks
+   chunk 1 -  the full rows
+   chunk 2 -  the full column/rows on the last row.
+   chunk 3 -  the very last item.
+   */
+if (!p->offset) {
+ if (p->rows >1) {
+   streamWrite(p->all.domain(int2(0,0),int2(p->cols,p->rows-1)),
+               (float4 *)(x));
+   }
+ if (p->last_cols >1) {
+   streamWrite(p->all.domain(int2(0,p->rows-1),int2(p->last_cols-1,p->rows)),
+              (float4 *)(x + 4*((p->rows-1)*p->cols)));
+   }
+ streamWrite(p->all.domain(int2(p->last_cols-1,p->rows-1),int2(p->last_cols,p->rows)),
+              &temp);
+ ix = (float *)x + 4*((p->rows-1)*p->cols + p->last_cols-1);
+ if (p->chunk_last_floats>=4) ix[3] = temp.w;
+ if (p->chunk_last_floats>=3) ix[2] = temp.z;
+ if (p->chunk_last_floats>=2) ix[1] = temp.y;
+                              ix[0] = temp.x;
+ }
+else {
+  int rp,cp,clf;
+  int rpto;
+  int cpto;
+  float4 temp;
+  int offset_chunk;
+  
+  ix=(float *)x;
+  
+  offset_chunk = p->offset>>2;
+  rp= offset_chunk / p->cols;
+  cp= offset_chunk % p->cols;
+  clf = p->offset & 3;
+  
+  /* do the very first word */
+  streamWrite(p->all.domain(int2(cp,rp),int2(cp+1,rp+1)),&temp);
+  if (clf<=0) *(ix++) = temp.x;
+  if (clf<=1) *(ix++) = temp.y;
+  if (clf<=2) *(ix++) = temp.z;
+  *(ix++) = temp.w;
+  
+  /* do the rest of the row */
+  offset_chunk++;
+  rp= offset_chunk / p->cols; 
+  cp= offset_chunk % p->cols;  
+  if (cp != 0) {
+    rpto = rp+1;
+    if (rpto == p->rows) { /* last last row */
+      cpto = p->last_cols-1; /* all but the very last chunk */
+      }
+    else {
+      cpto = p->cols; /* all the way to the end of the row */
+      }
+    if (cpto > cp) {
+      streamWrite(p->all.domain(int2(cp,rp),int2(cpto,rpto)),
+                    (float4 *)(ix))  ;
+      ix += 4* (cpto-cp);
+      cp=cpto;
+      if (cp==p->cols) {
+        cp=0;
+        rp++; /* cleared this row */
+	}
+      }
+    } /* if the column is not at tbe beginning of a row - usually */
+  /* here rp is the next row to be cleared,  and cp is  0, or the next position to do -- if we are the last row 
+  Now we can move the bulk of the rows out */
+  rpto = p->rows-1; /* all but the last row */
+  if (rp < rpto) { /* if there are any complete rows to move */
+    streamWrite(p->all.domain(int2(0,rp),int2(p->cols,rpto)),
+                  (float4 *)(ix));
+    ix += 4*(rpto-rp)*p->cols;
+    rp = rpto;
+    }
+  
+  /* now we are most likely at the last row with some last data to do  - but it might be all done */
+  cpto = p->last_cols-1;
+  if (cp <cpto) { /*if there are any complete columns to do */
+    streamWrite(p->all.domain(int2(cp,p->rows-1),int2(cpto,p->rows)),
+              (float4 *)(ix));
+    ix += 4*(cpto-cp);
+    cp = cpto;
+    }
+  
+  if (cp < p->last_cols) {
+    streamWrite(p->all.domain(int2(p->last_cols-1,p->rows-1),int2(p->last_cols,p->rows)),
+              &temp);
+    if (p->chunk_last_floats>=4) ix[3] = temp.w; 
+    if (p->chunk_last_floats>=3) ix[2] = temp.z;
+    if (p->chunk_last_floats>=2) ix[1] = temp.y;
+                                 ix[0] = temp.x;
+    }
+      
+  }
+
+}
+                              
+                              
+															                              
+                              
+                              
+                              
+                              
+#define GNET_END_PACKED_TS }}
+                              
+#define GNET_NEW_PACKED_TS(packptr,total_sizex) { \
+struct gpu_packed_ts pack;\
+struct gpu_packed_ts *packptr;\
+int chunk_size;\
+int chunk_last_floats;\
+int cols;\
+int rows;\
+int last_cols;\
+packptr = &pack;\
+chunk_size = (total_sizex+3)/4;\
+chunk_last_floats = total_sizex % 4;\
+if (chunk_last_floats==0) chunk_last_floats=4;\
+cols = 2048;\
+rows = (chunk_size + 2047) / 2048;\
+last_cols = chunk_size % 2048;\
+if (!last_cols) last_cols = 2048;\
+{\
+float4 decoder_f[4] = {float4(1.f,0.f,0.f,0.f),\
+                      float4(0.f,1.f,0.f,0.f),\
+		      float4(0.f,0.f,1.f,0.f),\
+		      float4(0.f,0.f,0.f,1.f)};\
+STREAM4(all,rows,cols);\
+STREAM4(chunk_set,1,cols);\
+STREAM4(float_sett,1,2048);\
+STREAM4_1D(decoder,4);\
+pack.offset=0;\
+pack.cols=cols;\
+pack.rows=rows;\
+pack.last_cols=last_cols;\
+pack.total_size=total_sizex;\
+pack.offset=0;\
+pack.chunk_size=chunk_size;\
+pack.chunk_last_floats=chunk_last_floats;\
+pack.all=all;\
+pack.chunk_set = chunk_set;\
+pack.float_sett = float_sett;\
+pack.decoder = decoder;\
+streamRead(decoder,decoder_f);
+
+
+
+
+
+                              
+                              
+
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+extern void net_load_gpu_input (
+struct gpu_network_ts *gnet,const float *inputx)
+{
+  int i;
+  int n0,n0p1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  n0 = gnet->input_layer->no_of_neurons;
+  {
+  
+  /* copy everything except the bias record */
+  streamRead(
+     gnet->input_layer->neuron_output,
+     (float *)inputx);
+  }
+}
+
+extern void net_load_gpu_target (
+struct gpu_network_ts *gnet,const float *targetx)
+{
+
+  streamRead(
+     gnet->target,
+     (float *)targetx);
+}
+
+
+extern void net_load_gpu_for_compute(
+  struct gpu_network_ts *gnet)
+{
+int l;
+for (l=0;l<gnet->no_of_layers;l++) {
+  struct gpu_layer_ts *layer;
+  struct network_ts *cpu_net;
+  int i;
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  
+  cpu_net = gnet->cpu_net;
+  layer = gnet->layer + l;
+  n = gnet->layer[l].no_of_neurons;
+  np1=n+1;
+  
+  /* load the bias records  - quickly -- without using streamRead */
+  if (cpu_net->layer[l].neuron_output[n] == 0.) /* if no bias */ {
+    kernel_zero(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+  else {
+    kernel_one(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+    
+  if (l>0) {
+    /* load the weight neurons */
+    streamRead((layer->upper_lower_weight),
+             cpu_net->layer[l].upper_lower_weight);
+    }
+  }    
+}
+
+
+
+
+extern void net_load_gpu_for_train(
+  struct gpu_network_ts *gnet)
+{
+int l;
+for (l=0;l<gnet->no_of_layers;l++) {
+  struct gpu_layer_ts *layer;
+  struct network_ts *cpu_net;
+  int i;
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  
+  cpu_net = gnet->cpu_net;
+  layer = gnet->layer + l;
+  n = gnet->layer[l].no_of_neurons;
+  np1=n+1;
+  
+  /* load the bias records  - quickly -- without using streamRead */
+  if (cpu_net->layer[l].neuron_output[n] == 0.) /* if no bias */ {
+    kernel_zero(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+  else {
+    kernel_one(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+
+  if (l>0) {
+    /* load the weight neurons */
+    streamRead((layer->upper_lower_weight),
+             cpu_net->layer[l].upper_lower_weight);
+/*    streamRead((layer->upper_lower_delta),
+             cpu_net->layer[l].upper_lower_delta);*/
+    kernel_zero(layer->upper_lower_delta);
+    }
+  /* load the learning rates */
+  streamRead((layer->neuron_learning_rate),
+         cpu_net->layer[l].neuron_learning_rate);
+  }    
+}
+
+
+
+
+void gpu_net_compute(struct gpu_network_ts *gnet)
+/* Hibbard Michael Engler Nov 2006 
+This computes the network forward propogation -- all within the GPU memory.
+This should be fast if we do many computations with the same net.
+It is called internally,  as we need to do funky things to allocate the 
+GPU memory for a neural net 
+*/
+{
+  int l;
+  for (l = 1; l < gnet->no_of_layers; l++) {
+    struct gpu_layer_ts *lower;
+    struct gpu_layer_ts *upper;
+    int nu, nl;
+    int i;
+    float value;
+    float (*act) (float);
+   
+    lower = &gnet->layer[l-1];
+    upper = &gnet->layer[l];
+   
+    nu = upper->no_of_neurons;
+    nl = lower->no_of_neurons+1;
+    
+    
+    kernel_mul(upper->upper_lower_weight,lower->neuron_output_plus_bias,
+                upper->upper_lower_temp);
+
+    valid_reduce_sum((upper->upper_lower_temp),nl,nu,(upper->activation_transformed));
+    
+    
+    switch (upper->activation) { 
+      case NET_ACT_LOGISTIC:
+      case NET_ACT_LOGISTIC_STEP:
+        kernel_sigma(upper->activation_transformed,upper->output_transformed);
+        break;
+      case NET_ACT_TANH:
+        kernel_tanhp(upper->activation_transformed,upper->output_transformed);
+        break;
+      case NET_ACT_IDENTITY:
+        kernel_identity(upper->activation_transformed,upper->output_transformed);
+        break;
+      default:
+        kernel_identity(upper->activation_transformed,upper->output_transformed);
+      }
+      
+    kernel_transpose(upper->output_transformed,
+              upper->neuron_output);
+   
+    } /* for each layer */
+} /* gpu_net_compute */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* This is what GNET_COMPUTE_INPUT_LAYER woudl expand to in brook:
+  layer=gnet->layer;  
+  n= layer->no_of_neurons;
+  np1=n+1;
+{
+    
+    float neuron_output_plus_bias<1,np1>;
+    
+    layer->neuron_output=neuron_output;
+    
+    nl=n;nlp1=np1;
+    layer++;
+    n= layer->no_of_neurons;
+    np1=n+1;
+
+But brook doesn't look at the preprocessor, and so it doesn't have a chance to expand
+the float neuron_output<1,np1> properly.
+So We expand GNET_COMPUTE_INPUT_LAYER to what brook would have expanded it to,  if brook knew:
+*/
+
+
+#define GNET_COMPUTE_INPUT_LAYER   layer=gnet->layer;  \
+  n= layer->no_of_neurons;\
+  np1=n+1;\
+{ STREAM1(neuron_output_plus_bias,1 , np1);\
+  DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n);\
+   layer->neuron_output= neuron_output;\
+   layer->neuron_output_plus_bias= neuron_output_plus_bias;
+ 
+ 
+#define GNET_COMPUTE_LAYER  nl=n;nlp1=np1;\
+ layer++;\
+ n = layer->no_of_neurons;\
+ np1=n+1;\
+{\
+        STREAM1(weight,n , nlp1);\
+        STREAM1(tempmv,n , nlp1);\
+        STREAM1(activation_transformed,n , 1);\
+        STREAM1(output_transformed,n , 1);\
+        STREAM1(neuron_output_plus_bias,1 , np1);\
+       DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n;\
+        layer->activation_transformed = activation_transformed;\
+        layer->output_transformed = output_transformed;\
+        layer->neuron_output= neuron_output;\
+        layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+        layer->upper_lower_weight = weight;\
+        layer->upper_lower_temp = tempmv
+
+#define GNET_COMPUTE_END_LAYER }   
+          
+
+#define GNET_COMPUTE_FROM_NET(gnet,net) \
+{struct gpu_network_ts *gnet;\
+  struct gpu_layer_ts *layer;\
+  int i,l;\
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */\
+  int nl,nlp1;\
+  \
+  struct gpu_network_ts thenet;\
+  struct gpu_layer_ts layers[6];\
+  /* build the gnet version of the network */\
+  gnet = &thenet;\
+  gnet->no_of_layers = net->no_of_layers;\
+  gnet->layer = layers;\
+  gnet->cpu_net = net;\
+  gnet->no_of_patterns = net->no_of_patterns;\
+  gnet->momentum = net->momentum;\
+  gnet->learning_rate = net->learning_rate;\
+  gnet->input_layer = layers;\
+  gnet->output_layer = layers+gnet->no_of_layers-1;\
+  \
+  for (l=0;l<gnet->no_of_layers;l++) {\
+    gnet->layer[l].no_of_neurons = net->layer[l].no_of_neurons;\
+    gnet->layer[l].no_of_neurons_plus_1 = net->layer[l].no_of_neurons+1;\
+    gnet->layer[l].activation = net->layer[l].activation;\
+    }
+
+
+#define GNET_COMPUTE_TO_NET(gnet,net) 
+
+
+#define GNET_END }
+    
+    
+    
+    
+
+
+/* This is even faster -- as it reduced the communication tothe CPU's
+ * but it doesnt work yet.
+ */
+extern void net_compute_fast(struct network_ts *net, const float *inputx, float *output)
+{
+ if (net->no_of_layers == 4)
+  {
+  GNET_COMPUTE_FROM_NET(gnet,net);
+  GNET_COMPUTE_INPUT_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+    
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute(gnet);
+  net_load_gpu_input (gnet,inputx);
+    
+  gpu_net_compute(gnet);
+ 
+  if (output != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    streamWrite(gnet->output_layer->neuron_output,output);
+    }
+  GNET_COMPUTE_TO_NET(gnet,net);
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_END;  
+    
+  } /* if number of layers are 4 */
+ else if (net->no_of_layers == 3)
+  {
+  GNET_COMPUTE_FROM_NET(gnet,net);
+  GNET_COMPUTE_INPUT_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+    
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute(gnet);
+  net_load_gpu_input (gnet,inputx);
+    
+  gpu_net_compute(gnet);
+    
+  if (output != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    streamWrite(gnet->output_layer->neuron_output,output);
+    }
+  GNET_COMPUTE_TO_NET(gnet,net);
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_END;  
+    
+  } /* if number of layers are 3 */
+else net_compute(net,inputx,output);
+}
+/* This is even faster -- as it reduced the communication tothe CPU's
+ * but it doesnt work yet.
+ */
+
+
+
+
+
+
+
+
+#define GNET_LEARN_INPUT_LAYER   layer=gnet->layer;  \
+  n= layer->no_of_neurons;\
+  np1=n+1;\
+{ STREAM1(neuron_output_plus_bias,1 , np1);\
+ DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n);\
+  STREAM1(neuron_learning_rate_plus_bias,1 , np1);\
+ DOMINO(neuron_learning_rate,neuron_learning_rate_plus_bias,0,0,1,n);\
+  STREAM1(neuron_error_plus_bias,1 , np1);\
+ DOMINO(neuron_error,neuron_error_plus_bias,0,0,1,n);\
+  layer->neuron_learning_rate_plus_bias= neuron_learning_rate_plus_bias;\
+  layer->neuron_learning_rate= neuron_learning_rate;\
+  layer->neuron_output= neuron_output;\
+  layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+  layer->neuron_error= neuron_error;\
+  layer->neuron_error_plus_bias = neuron_error_plus_bias;
+ 
+ 
+#define GNET_LEARN_LAYER  nl=n;nlp1=np1;\
+ layer++;\
+ n = layer->no_of_neurons;\
+ np1=n+1;\
+{\
+        STREAM1(weight(n , nlp1);\
+        STREAM1(delta(n , nlp1);\
+        STREAM1(tempmv(n , nlp1);\
+        STREAM1(activation_transformed(n , 1);\
+        STREAM1(output_transformed(n , 1);\
+        STREAM1(derivitave_plus_bias(1 , np1);\
+        STREAM1(error_temp_plus_bias(1 , np1);\
+        STREAM1(neuron_output_plus_bias(1 , np1);\
+        DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n);\
+        DOMINO(derivitave,derivitave_plus_bias,0,0,1,n);\
+        DOMINO(error_temp,error_temp_plus_bias,0,0,1,n);\
+        STREAM1(neuron_error_plus_bias(1 , np1);\
+        DOMINO(neuron_error,neuron_error_plus_bias,0,0,1,n);\
+        STREAM1(neuron_learning_rate_plus_bias(1 , np1);\
+        DOMINO(neuron_learning_rate,neuron_learning_rate_plus_bias,0,0,1,n);\
+        layer->neuron_learning_rate_plus_bias= neuron_learning_rate_plus_bias;\
+        layer->neuron_learning_rate= neuron_learning_rate;\
+        layer->neuron_output= neuron_output;\
+        layer->derivitave= derivitave;\
+        layer->error_temp= error_temp;\
+        layer->activation_transformed = activation_transformed;\
+        layer->output_transformed = output_transformed;\
+        layer->derivitave_plus_bias= derivitave_plus_bias;\
+        layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+	layer->error_temp_plus_bias = error_temp_plus_bias;\
+        layer->upper_lower_weight = weight;\
+        layer->upper_lower_delta = delta;\
+        layer->upper_lower_temp = tempmv;\
+        layer->neuron_error= neuron_error;\
+        layer->neuron_error_plus_bias = neuron_error_plus_bias;
+
+#define GNET_LEARN_END_LAYER }          
+          
+
+#define GNET_LEARN_FROM_NET(gnet,net) \
+{struct gpu_network_ts *gnet;\
+  struct gpu_layer_ts *layer;\
+  int i,l;\
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */\
+  int nl,nlp1;\
+  \
+  struct gpu_network_ts thenet;\
+  struct gpu_layer_ts layers[6];\
+  STREAM1(target_stream(1 , net->output_layer->no_of_neurons);\
+  STREAM1(global_error(1 , 1);\
+  /* build the gnet version of the network */\
+  gnet = &thenet;\
+  gnet->no_of_layers = net->no_of_layers;\
+  gnet->layer = layers;\
+  gnet->cpu_net = net;\
+  gnet->no_of_patterns = net->no_of_patterns;\
+  gnet->momentum = net->momentum;\
+  gnet->learning_rate = net->learning_rate;\
+  gnet->input_layer = layers;\
+  gnet->output_layer = layers+net->no_of_layers-1;\
+  \
+  for (l=0;l<gnet->no_of_layers;l++) {\
+    gnet->layer[l].no_of_neurons = net->layer[l].no_of_neurons;\
+    gnet->layer[l].no_of_neurons_plus_1 = net->layer[l].no_of_neurons+1;\
+    gnet->layer[l].activation = net->layer[l].activation;\
+    }\
+  gnet->global_error=global_error;\
+  gnet->target=target_stream;
+
+
+#define GNET_LEARN_TO_NET(gnet,net) \
+net->no_of_patterns = gnet->no_of_patterns;\
+streamWrite(gnet->global_error,&(net->global_error));\
+for (l=0;l<gnet->no_of_layers;l++) {\
+  if (l) {\
+    streamWrite(gnet->layer[l].upper_lower_weight,net->layer[l].upper_lower_weight);\
+/*    streamWrite(gnet->layer[l].upper_lower_delta,net->layer[l].upper_lower_delta);*/\
+    }\
+  net->layer[l].activation = gnet->layer[l].activation;\
+  }
+
+
+#define GNET_END }
+
+    
+	
+
+		
+		    
+void gpu_net_compute_output_error(struct gpu_network_ts *gnet) {
+struct gpu_layer_ts *upper=gnet->output_layer;
+int n=upper->no_of_neurons;
+kernel_subtract(gnet->target,upper->neuron_output,
+                         upper->error_temp);
+switch (gnet->output_layer->activation) { 
+        case NET_ACT_LOGISTIC:
+        case NET_ACT_LOGISTIC_STEP:
+          kernel_d_sigma(upper->neuron_output,upper->neuron_error);
+          break;
+        case NET_ACT_TANH:
+          kernel_d_tanhp(upper->neuron_output,upper->neuron_error);
+          break;
+        case NET_ACT_IDENTITY:
+          kernel_d_identity(upper->neuron_output,upper->neuron_error);
+	  break;
+        default:
+          kernel_d_identity(upper->neuron_output,upper->neuron_error);
+        }
+kernel_mul( upper->neuron_error
+            ,upper->error_temp,
+	    upper->neuron_error);
+/* figure out the global error */        
+kernel_sum_square_over_2(upper->neuron_error,upper->error_temp);
+valid_reduce_sum_inverse(upper->error_temp,n,1,gnet->global_error);
+}
+
+
+
+
+
+void gpu_net_backprop_error(struct gpu_network_ts *gnet,int l) {
+/* Compute the lower level errors */
+if (l >1) { /* only for the upper levels,  don't need to know the error levels
+                      on the bottom -- although it might be interesting */
+        /* errora = sum(weight * uppererror) */              
+  struct gpu_layer_ts *upper = gnet->layer+l;
+  struct gpu_layer_ts *lower = gnet->layer+l-1;
+  int nl=lower->no_of_neurons; 
+  int nu=upper->no_of_neurons; 
+  /* we are sharing the activation_transformed record */
+  kernel_transpose(upper->neuron_error
+                  ,upper->activation_transformed);
+
+  kernel_mul(upper->upper_lower_weight,upper->activation_transformed,upper->upper_lower_temp);
+//  kernel_zero(lower->error_temp_plus_bias);
+  valid_reduce_sum_inverse(upper->upper_lower_temp,nu,nl+1,lower->error_temp_plus_bias);
+       
+  /* derivitave = dy/dx(output)  which varies based on the function */
+  switch (lower->activation) { 
+          case NET_ACT_LOGISTIC:
+          case NET_ACT_LOGISTIC_STEP:
+            kernel_d_sigma(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          case NET_ACT_TANH:
+            kernel_d_tanhp(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          case NET_ACT_IDENTITY:
+            kernel_d_identity(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          default:
+            kernel_d_identity(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+          }
+
+        /* errors = errora* derivitave */
+        kernel_mul(lower->error_temp_plus_bias
+	  ,lower->neuron_error_plus_bias
+	     ,lower->neuron_error_plus_bias);  
+	     
+	     
+  } /* if we need to compute errors for the lower level */ 
+
+}			
+			    			    			    
+				
+
+
+
+
+void gpu_net_adjust_weights(struct gpu_network_ts *gnet,int l) {
+struct gpu_layer_ts *upper = gnet->layer+l;
+struct gpu_layer_ts *lower = gnet->layer+l-1;
+int n=upper->no_of_neurons;
+
+/* then adjust the weights.
+   Note -  some theories have the weights adjusted first,  then the backward pass */
+/* delta = lr * error * lower output + momentum * delta */
+if (l<=1) {
+  /* we are sharing the activation_transformed record */
+  kernel_transpose(upper->neuron_error,upper->activation_transformed);
+  }
+/* we are also using the output_transformed record :)*/
+
+kernel_compute_delta(gnet->learning_rate,
+                    upper->activation_transformed,
+		    lower->neuron_output_plus_bias,
+		    gnet->momentum,
+		    upper->upper_lower_delta,
+		    upper->upper_lower_delta);
+kernel_add(upper->upper_lower_weight,
+           upper->upper_lower_delta,
+	   upper->upper_lower_weight); 
+
+}			
+
+
+void gpu_net_learn(struct gpu_network_ts *gnet) 
+{					
+int l;
+gpu_net_compute_output_error(gnet);
+for (l=gnet->no_of_layers-1;l>0;l--) {
+  if (l>1) {
+    gpu_net_backprop_error(gnet,l);
+    }
+  gpu_net_adjust_weights(gnet,l);
+  }
+}					   					    
+
+void net_learn_cycle(
+	struct network_ts *net, 
+	  const float *input, 
+	  const float *target,
+	  int epochs,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int accuracy_first_output,
+	  int accuracy_skip_offset,
+	  int no_accuracies
+	  )
+{
+int total_input_size;
+int total_output_size;
+float *run_input;
+float *run_target;
+float *run_output;
+int i;
+int ll;
+total_input_size = net->input_layer->no_of_neurons;
+total_output_size = net->output_layer->no_of_neurons;
+run_input = (float *)malloc(sizeof(float)*total_input_size);
+run_target =(float *) malloc(sizeof(float)*total_output_size);
+run_output = (float *)malloc(sizeof(float)*total_output_size);
+for (ll=0;ll<epochs;ll++) {
+ for (i=0;i<iterations;i++) {
+   int j;
+   
+   /* copy the input */
+   memcpy((void *)run_input,(void *)(input+i*next_input_offset),sizeof(float)*total_input_size);
+   net_compute(net,run_input,run_output);
+
+   /* copy the output */
+   memcpy((void *)run_target,(void *)(target+i*next_output_offset),sizeof(float)*accuracy_start);
+
+   
+   /* gather the accuracy data - if ther is any */
+   for (j=0;j<no_accuracies;j++) {
+     float this_output = run_output[j*accuracy_skip_offset + accuracy_first_output];
+     float this_target = run_target[j*accuracy_skip_offset + accuracy_first_output];
+     float this_error = fabsf(this_target - this_output);
+     run_target[j+accuracy_start] = this_error;
+     }
+   
+   net_compute_output_error(net,run_target);
+
+   net_train(net);
+   
+  }
+ }
+free(run_input);
+free(run_target);
+free(run_output);
+}
+
+
+				    
+						
+
+
+void net_learn_cycle_fast(
+	struct network_ts *net, 
+	  const float *inputx, 
+	  const float *targetx,
+	  int epochs,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int accuracy_first_output,
+	  int accuracy_skip_offset,
+	  int no_accuracies
+	  )
+{
+int u;
+int ll;
+int size_in_floats_input;
+int size_in_floats_target;
+int size_in_floats_with_target;
+int target_overlap;
+
+
+/* The fast method only works for 2 layer and 3 layer modes */
+if( (net->no_of_layers != 3)&&(net->no_of_layers != 4)) {
+   net_learn_cycle(net,inputx,targetx,epochs,iterations,next_input_offset,
+   next_output_offset,accuracy_start,accuracy_first_output,accuracy_skip_offset,no_accuracies);
+   return;
+   }
+   
+   
+/* OK we need to store the input data and the target data. */
+size_in_floats_input=net->input_layer->no_of_neurons + next_input_offset * (iterations-1);
+target_overlap= (((inputx + size_in_floats_input) > targetx)&&(inputx <=targetx));
+/* special case here -- we overlap.  so we will make the packed records
+   together and share them */
+
+size_in_floats_target=net->output_layer->no_of_neurons +  next_output_offset * (iterations-1);
+
+if (target_overlap) {
+  /* If they overlap,  we will make a huge chunk of them both ans use that,  thereby saving space
+    YEAH!
+    So we take the target size end -- compared to the input size end,  and use the greater of the two fo rthe end position */
+  size_in_floats_with_target =(targetx -inputx) + size_in_floats_target;
+  if (size_in_floats_with_target < size_in_floats_input)  size_in_floats_with_target = size_in_floats_input;
+  size_in_floats_target = 1;
+  }
+else {
+  size_in_floats_with_target = size_in_floats_input;
+  }
+
+GNET_NEW_PACKED_TS(input,size_in_floats_with_target);
+GNET_NEW_PACKED_TS(target,size_in_floats_target);
+
+if (target_overlap) {
+  /* we will actually use the same stream twice - once for input and target :) */
+  target->offset = (targetx - inputx);
+  target->all = input->all;
+  target->rows = input->rows;
+  target->last_cols = input->last_cols;
+  target->chunk_size = input->chunk_size;
+  target->chunk_last_floats = input->chunk_last_floats;
+  }
+
+
+packRead(input,inputx);
+if (!target_overlap) {
+  packRead(target,targetx);
+  }
+ /* OK,  We now have loaded arrays of inputs and targets (minus accuracy target information 
+  since that is derived)
+  packed into two (and someday maybee one) honking big 2 dimensional arrays of float4's.  
+  And we are going to chunk this into the input and target sections appropriately.
+  And we are going to train this sucker 
+  over and over again
+  And later on we are going to train an array of these guys over and over
+  and then we have nirvana!
+  */
+  
+
+/* Now allocate the gnet and all the streams to be able to compute stuff */  
+
+ if (net->no_of_layers == 4)
+  {
+  GNET_LEARN_FROM_NET(gnet,net);
+  
+  GNET_LEARN_INPUT_LAYER;
+  GNET_LEARN_LAYER;
+  GNET_LEARN_LAYER;
+  GNET_LEARN_LAYER;
+
+  
+  /* done allocating.  Now lets get the data in */
+
+  net_load_gpu_for_train(gnet);
+  for (ll=0;ll<epochs;ll++) {
+   for (i=0;i<iterations;i++) {
+     transfer_from_pack(input,i*next_input_offset,i*next_input_offset +
+                                                gnet->input_layer->no_of_neurons,
+						gnet->input_layer->neuron_output);
+
+    gpu_net_compute(gnet);
+    if (no_accuracies) {
+      transfer_from_pack(target,i*next_output_offset,i*next_output_offset +accuracy_start,
+                        gnet->target.domain(int2(0,0),int2(accuracy_start,1)));
+      kernel_compute_accuracy( gnet->output_layer->neuron_output, // output
+                              gnet->target, // target
+			      gnet->target.domain(int2(accuracy_start,0),int2(gnet->output_layer->no_of_neurons,1)), // accuracy
+			      (float)accuracy_first_output,(float)accuracy_skip_offset,(float)accuracy_start);
+      }
+    else {
+      transfer_from_pack(target,i*next_input_offset,i*next_input_offset +
+                                                gnet->output_layer->no_of_neurons,
+						gnet->target);      
+      }
+    gpu_net_learn(gnet);
+    } /* each iteration down the samples provided */
+   } /* each loop */
+  GNET_LEARN_TO_NET(gnet,net);
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_END;  
+    
+  } /* if number of layers are 4 */
+ if (net->no_of_layers == 3)
+  {
+  GNET_LEARN_FROM_NET(gnet,net);
+  
+  GNET_LEARN_INPUT_LAYER;
+  GNET_LEARN_LAYER;
+  GNET_LEARN_LAYER;
+
+  
+  /* done allocating.  Now lets get the data in */
+
+  net_load_gpu_for_train(gnet);
+  for (ll=0;ll<epochs;ll++) {
+   for (i=0;i<iterations;i++) {
+    transfer_from_pack(input,i*next_input_offset,i*next_input_offset +
+                                                gnet->input_layer->no_of_neurons,
+						gnet->input_layer->neuron_output);
+    gpu_net_compute(gnet);
+    if (no_accuracies) {
+      transfer_from_pack(target,i*next_output_offset,i*next_output_offset +accuracy_start,
+                        gnet->target.domain(int2(0,0),int2(accuracy_start,1)));
+      kernel_compute_accuracy( gnet->output_layer->neuron_output, // output
+                              gnet->target, // target
+			      gnet->target.domain(int2(accuracy_start,0),int2(gnet->output_layer->no_of_neurons,1)), // accuracy
+			      (float)accuracy_first_output,(float)accuracy_skip_offset,(float)accuracy_start);
+			      
+      }
+    else {
+      transfer_from_pack(target,i*next_input_offset,i*next_input_offset +
+                                                gnet->output_layer->no_of_neurons,
+						gnet->target);      
+      }
+      
+    gpu_net_learn(gnet);
+    } /* each iteration down the samples provided */
+   } /* each loop */
+  GNET_LEARN_TO_NET(gnet,net);
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_END;  
+    
+  } /* if number of layers are 3 */
+GNET_END_PACKED_TS;
+GNET_END_PACKED_TS;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+void net_run_batch(
+	struct network_ts *net, 
+	  const float *input, 
+	  float *output,
+	  float *accuracies,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int no_accuracies
+	  )
+{
+int total_input_size;
+int total_output_size;
+float *run_input;
+float *run_output;
+int i;
+total_input_size = net->input_layer->no_of_neurons;
+total_output_size = net->output_layer->no_of_neurons;
+
+run_input = (float *)malloc(sizeof(float)*total_input_size);
+run_output = (float *)malloc(sizeof(float)*total_output_size);
+ for (i=0;i<iterations;i++) {
+   int j;
+   
+   /* copy the input */
+   memcpy((void *)run_input,(void *)(input+i*next_input_offset),sizeof(float)*total_input_size);
+   net_compute(net,run_input,run_output);
+
+   if (accuracies) {
+     /* copy the output */
+     memcpy((void *)(output+i*next_output_offset),(void *)(run_output),sizeof(float)*accuracy_start);
+
+     /* copy the accuracy */
+     memcpy((void *)(accuracies+i*no_accuracies),(void *)(run_output+accuracy_start),sizeof(float)*no_accuracies);
+     }
+   else {
+     /* just the output */
+     memcpy((void *)(output+i*next_output_offset),(void *)(run_output),sizeof(float)*total_output_size);
+     } /* if we are transferring the output */     
+   } /* for each iteration */
+free(run_input);
+free(run_output);
+}
+
+
+
+
+
+
+void net_run_batch_fast(
+	struct network_ts *net, 
+	  const float *inputx, 
+	  float *outputx,
+	  float *accuraciesx,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int no_accuracies
+	  )
+{
+int u;
+int ll;
+
+int size_in_floats_input;
+int size_in_floats_output;
+int size_in_floats_accuracy;
+int size_in_floats_with_output;
+int output_overlap;
+
+
+/* The fast method only works for 2 layer and 3 layer modes */
+if( (net->no_of_layers != 3)&&(net->no_of_layers != 4)) {
+   net_run_batch(net,inputx,outputx,accuraciesx,iterations,next_input_offset,next_output_offset,
+     accuracy_start,no_accuracies);
+   return;
+   }
+   
+
+   
+/* OK we need to store the input data and the target data. */
+size_in_floats_input=net->input_layer->no_of_neurons + next_input_offset * (iterations-1);
+output_overlap= (((inputx + size_in_floats_input) > outputx)&&(inputx <=outputx));
+/* special case here -- we overlap.  so we will make the packed records
+   together and share them */
+
+size_in_floats_output=net->output_layer->no_of_neurons +  next_output_offset * (iterations-1);
+
+
+if (output_overlap) {
+  /* If they overlap,  we will make a huge chunk of them both ans use that,  thereby saving space
+    and letting the output feed into the input (for things like stock market regression)
+    So we take the target size end -- compared to the input size end,  and use the greater of the two fo rthe end position */
+  size_in_floats_with_output =(outputx -inputx) + size_in_floats_output;
+  if (size_in_floats_with_output < size_in_floats_input)  size_in_floats_with_output = size_in_floats_input;
+  size_in_floats_output = 1; /* need to allocate something - lets make it small */
+  }
+else {
+  size_in_floats_with_output = size_in_floats_input;
+  }
+
+
+
+/*Ok - now get the size needed for the accuracies */
+if (accuraciesx) {
+  size_in_floats_accuracy = no_accuracies * (iterations);
+  }
+else  {
+  size_in_floats_accuracy = 1;
+  }
+
+
+
+GNET_NEW_PACKED_TS(input,size_in_floats_with_output);
+GNET_NEW_PACKED_TS(output,size_in_floats_output);
+GNET_NEW_PACKED_TS(accuracy,size_in_floats_accuracy);
+if (output_overlap) {
+  output->offset = (outputx - inputx);
+  output->all = input->all;
+  output->rows = input->rows;
+  output->last_cols = input->last_cols;
+  output->chunk_size = input->chunk_size;
+  output->chunk_last_floats = input->chunk_last_floats;
+  }
+packRead(input,inputx);
+if (accuraciesx) {
+  kernel4_zero(accuracy->all);
+  }
+if (!output_overlap) {
+  kernel4_zero(output->all);
+  }  
+/* OK,  now we have 3 arrays.  An array of inputs,  an array of outputs,  and an array of accuracies (if applicable)
+The output might be the same as the input array - we don't care.  It will still work.
+So now, we must transfer the input,  load the data,  transfer the output.
+*/
+
+
+ if (net->no_of_layers == 4)
+  {
+  GNET_COMPUTE_FROM_NET(gnet,net);
+  GNET_COMPUTE_INPUT_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute(gnet);
+
+  for (i=0;i<iterations;i++) {
+    transfer_from_pack(input,i*next_input_offset,i*next_input_offset +
+                                                gnet->input_layer->no_of_neurons,
+						gnet->input_layer->neuron_output);
+    gpu_net_compute(gnet);
+    if (no_accuracies) {
+      transfer_to_pack(output,i*next_output_offset,i*next_output_offset +accuracy_start,
+                        gnet->output_layer->neuron_output.domain(int2(0,0),int2(accuracy_start,1)));
+      transfer_to_pack(accuracy,i*no_accuracies,i*no_accuracies +no_accuracies,
+                gnet->output_layer->neuron_output.domain(int2(accuracy_start,0),int2(no_accuracies+accuracy_start,1)));
+      }
+    else {
+      transfer_from_pack(output,i*next_output_offset,i*next_output_offset +gnet->output_layer->no_of_neurons,
+                        gnet->output_layer->neuron_output);
+      }
+    } /* each iteration down the samples provided */
+  GNET_COMPUTE_TO_NET(gnet,net);
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_END;    
+  } /* if number of layers are 4 */
+
+
+/* now put the data back for output and possibly accuracy */
+packWrite(output,outputx);
+if (accuraciesx) {
+  packWrite(accuracy,accuraciesx);
+  }
+
+/* done. */
+
+GNET_END_PACKED_TS;
+GNET_END_PACKED_TS;
+GNET_END_PACKED_TS;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+/*===================================================*/
+
+
+
+
+
+kernel void kernel4_mul( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a*b;
+}
+
+
+
+kernel void kernel4_add( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a+b;
+}
+
+kernel void kernel_add_three4 (float4 a<>, float4 b <>, float4 c<>,out float4 d<>) {
+d=a+b+c;
+}
+
+kernel void kernel4_add_four (float4 a<>, float4 b <>, float4 c<>,float4 d<>,out float4 e<>) {
+e=a+b+c+d;
+}
+
+kernel void kernel4_min_four (float4 a<>, float4 b <>, float4 c<>,float4 d<>,out float4 e<>) {
+float4 f;
+float4 g;
+float4 h;
+f.x=min(a.x,b.x);
+f.y=min(a.y,b.y);
+f.z=min(a.z,b.z);
+f.w=min(a.w,b.w);
+g.x=min(c.x,d.x);
+g.y=min(c.y,d.y);
+g.z=min(c.z,d.z);
+g.w=min(c.w,d.w);
+h.x = min(g.x,f.x);
+h.y = min(g.y,f.y);
+h.z = min(g.z,f.z);
+h.w = min(g.w,f.w);
+e=h;
+}
+
+kernel void kernel_subtract4( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a-b;
+}
+
+
+/* note - kernel reduce has a bug in it for weird sized shapes. */
+reduce void kernel4_reduce(float4 x<>, reduce float4 result<>) {
+  result = result + x;
+}
+
+/* note - kernel reduce has a bug in it for weird sized shapes. */
+reduce void kernel4_min_reduce(float4 x<>, reduce float4 result<>) {
+float4 f;
+f.x=min(x.x,result.x);
+f.y=min(x.y,result.y);
+f.z=min(x.z,result.z);
+f.w=min(x.w,result.w);
+  result = f;
+}
+
+/* used to compute the global error */
+kernel void kernel4_sum_square_over_2(float4 x<>, out float4 result<>) {
+  result = x* x  * 0.5f;
+}
+
+
+
+
+
+
+void valid_reduce_sum4(float4 a<>,int rmax,int csize,
+                   float4 b<>)
+/* this reduces destructively by hand.  We do this because there is a bug in reducing on dx9 
+First the bug:
+If you resuze something the size 47,  position 46 is double counted,  and position 44 is not counted.
+This ocurrs at many oddly shaped reductions firther on.
+
+Now this algorithm:
+We take the size of the array,  if it is bigger than 4,  we divide into 4 segments (with posible remainder left alone).
+Each of the 4 segments is added together and destructively stored in the 4th segment,  Then we loop again with
+trunc(the original size /4) + remainder as the new size.
+Drawback:  the remainders are not summed as evenly as the rest, so if we are dealing with a large matrix,  some resolution
+  might be lost:  1000000 + 0.25 = 1000000.  But since we are reducing by thouseands,not millions,  things should be ok.
+
+If the size is <4 then add them all together and place them into the output.
+
+Example:
+Size 47
+47/4 = 11
+
+add 0-11 11-22 22-33 33-44 into 33-44
+New size 33-47 = 14
+14/4 = 3
+add 33-36 36-39 39-42 42-45 into 42-45
+new size 42-47 = 5
+5/4= 1
+add 42-43 43-44 44-45 45-46 into 45-46
+new size 46-47 = 2
+
+Add 46 + 47 into result
+
+*/
+{
+int i;
+int rmin=0;
+int rsize = rmax - rmin;
+while (rsize >24) {
+  int offset = rsize>>2;
+  
+  
+  kernel4_add_four(a.domain(int2(rmin,0),int2(rmin+offset,csize)),
+       a.domain(int2(rmin+offset,0),int2(rmin+offset+offset,csize)),
+        a.domain(int2(rmin+offset+offset,0),int2(rmin+offset*3,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)) );
+  
+  rmin = rmin + offset*3;
+  rsize = rmax - rmin;
+  
+    
+  }
+{
+float4 x<csize,rsize>;
+copy4(a.domain(int2(rmin,0),int2(rmax,csize)),x);  
+kernel4_reduce(x,b);
+}
+
+}
+
+
+kernel void kernel4_transpose (float4 inx[][], out float4 result<>) {
+result=inx[indexof result.yx];
+
+}
+
+
+kernel void kernel4_one(out float4 result<>) {
+result=1.f;
+}
+
+
+
+
+
+
+
+kernel void kernel_compute_accuracy4(float4 output[][],float4 target[][],
+  out float4 accuracy<>,float accuracy_first_output,float accuracy_skip_offset,float accuracy_start) {
+float pos1; 
+float pos2;
+float4 a;
+float4 b;
+pos1 = indexof accuracy.y;
+pos2 = indexof accuracy.x - accuracy_start; /* domain indexof is really the indexof of the base stream */
+a = output[pos1][pos2*accuracy_skip_offset+accuracy_first_output];
+b = target[pos1][pos2*accuracy_skip_offset+accuracy_first_output];
+accuracy = abs(a-b);
+}
+
+  
+  
+/* this reduces in the inverse dimension */
+void valid_reduce_sum_inverse4(float4 a<>,int cmax,int rsize,
+                   float4 b<>)
+{
+int i;
+
+int cmin=0;
+int csize = cmax - cmin;
+
+
+while (csize >24) {
+  int offset = csize>>2;
+  kernel4_add_four(a.domain(int2(0,cmin),int2(rsize,cmin+offset)),
+       a.domain(int2(0,cmin+offset),int2(rsize,cmin+offset+offset)),
+        a.domain(int2(0,cmin+offset+offset),int2(rsize,cmin+offset*3)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)) );
+  
+  cmin = cmin + offset*3;
+  csize = cmax - cmin;
+  
+  }  
+{
+float4 x<csize,rsize>;
+copy4(a.domain(int2(0,cmin),int2(rsize,cmax)),x);
+
+kernel4_reduce(x,b);
+}
+}
+
+    
+/* this reduces in the inverse dimension */
+void valid_reduce_min_inverse4(float4 a<>,int cmax,int rsize,
+                   float4 b<>)
+{
+int i;
+
+int cmin=0;
+int csize = cmax - cmin;
+
+
+while (csize >24) {
+  int offset = csize>>2;
+  kernel4_min_four(a.domain(int2(0,cmin),int2(rsize,cmin+offset)),
+       a.domain(int2(0,cmin+offset),int2(rsize,cmin+offset+offset)),
+        a.domain(int2(0,cmin+offset+offset),int2(rsize,cmin+offset*3)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)) );
+  
+  cmin = cmin + offset*3;
+  csize = cmax - cmin;
+  
+  }  
+{
+float4 x<csize,rsize>;
+copy4(a.domain(int2(0,cmin),int2(rsize,cmax)),x);
+
+kernel4_min_reduce(x,b);
+}
+}
+
+/* kernel functions for the activation and erro computation */
+
+kernel void kernel4_identity( float4 a<>,out float4 c<> ) {
+  c = a;
+}
+
+kernel void kernel4_d_identity( float4 a<>,out float4 c<> ) {
+  c = 1.0f;
+}
+
+
+
+
+kernel void kernel4_sigma( float4 a<>,out float4 c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+kernel void kernel4_d_sigma(float4 sigma_x<>,out float4 c<>)
+{
+  c = (1.0f - sigma_x) * sigma_x;
+}
+
+
+
+
+kernel void kernel4_tanhp( float4 a<>,out float4 c<> ) {
+c = tanh(a);
+}
+
+kernel void kernel4_d_tanhp (float4 a<>, out float4 c <>) {
+c = 1.0f - a * a;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* used to find the new delta to add to the errors -- including momentum */
+kernel void kernel4_compute_delta (float learning_rate, float4 upper_error<>,
+                                   float4 output<>,
+                                   float momentum,
+                                   float4 delta<>,
+                                   out float4 newdelta<>) 
+{
+newdelta = learning_rate * upper_error * output + momentum * delta;
+}
+
+                              
+                              
+                              
+
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+
+kernel void kernel_make_to_float4(float a[][],float b[][],float c[][],float d[][],out float4 result<>) 
+{
+float2 i;
+float4 q;
+i = indexof result.xy;
+q.x = a[i];
+q.y = b[i];
+q.z = c[i];
+q.w = d[i];
+result=q;
+}
+
+
+
+kernel void kernel_expand_to_float4 (float inx[][], out float4 result<>) {
+float a;
+float4 b;
+a=inx[indexof result.xy];
+b.x = a;
+b.y =a;
+b.z =a;
+b.w = a;
+result = b;
+}
+
+kernel void kernel_split_from_float4( float4 inx[][],out float a<>,out float b<>,out float c<>,out float d<>) {
+float4 x;
+x=inx[indexof a.xy];
+a=x.x;
+b=x.y;
+c=x.z;
+d=x.w;
+}
+
+
+
+			      			      
+							                                  
+                              
+extern void net_load_gpu_input4 (
+struct gpu_network_ts *gnet,const float *inputx)
+{
+  int i;
+  int n0,n0p1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  n0 = gnet->input_layer->no_of_neurons;
+  {
+  float temp<1,n0>;
+  /* copy everything except the bias record */
+  streamRead(
+     temp,
+     (float *)inputx);
+  kernel_expand_to_float4(temp,gnet->input_layer->neuron_output);
+  }
+}
+
+extern void net_load_gpu_target4 (
+struct gpu_network_ts *gnet,const float *targetx)
+{
+int n=gnet->output_layer->no_of_neurons;
+{
+  float temp<1,n>;
+  streamRead(
+     temp,
+     (float *)targetx);
+  kernel_expand_to_float4(temp,gnet->target);
+  }
+}
+
+
+
+
+extern void net_load_gpu_for_compute4(
+  struct gpu_network_ts *gnet)
+{
+int l;
+for (l=0;l<gnet->no_of_layers;l++) {
+  struct gpu_layer_ts *layer;
+  struct network_ts *cpu_net1;
+  struct network_ts *cpu_net2;
+  struct network_ts *cpu_net3;
+  struct network_ts *cpu_net4;
+  int i;
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  int nlp1;
+  
+  cpu_net1 = gnet->cpu_net;
+  cpu_net2 = gnet->cpu_net2;
+  cpu_net3 = gnet->cpu_net3;
+  cpu_net4 = gnet->cpu_net4;
+  layer = gnet->layer + l;
+  n = gnet->layer[l].no_of_neurons;
+  np1=n+1;
+  
+  /* load the bias records  - quickly -- without using streamRead */
+  if (cpu_net1->layer[l].neuron_output[n] == 0.) /* if no bias */ {
+    kernel4_zero(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+  else {
+    kernel4_one(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+
+  if (l>0) {
+    /* load the weight neurons */
+    nlp1 = gnet->layer[l-1].no_of_neurons+1;
+    {
+      float temp1<n,nlp1>;  
+      float temp2<n,nlp1>;  
+      float temp3<n,nlp1>;  
+      float temp4<n,nlp1>;  
+      streamRead(temp1,cpu_net1->layer[l].upper_lower_weight);
+      streamRead(temp2,cpu_net2->layer[l].upper_lower_weight);
+      streamRead(temp3,cpu_net3->layer[l].upper_lower_weight);
+      streamRead(temp4,cpu_net4->layer[l].upper_lower_weight);
+      kernel_make_to_float4(temp1,temp2,temp3,temp4,layer->upper_lower_weight);
+      } /* load the weight neurons block */
+    } /* if we are not the input layer */
+  } /* for each layer */
+}
+
+
+
+
+extern void net_load_gpu_for_train4(
+  struct gpu_network_ts *gnet)
+{
+int l;
+for (l=0;l<gnet->no_of_layers;l++) {
+  struct gpu_layer_ts *layer;
+  struct network_ts *cpu_net1;
+  struct network_ts *cpu_net2;
+  struct network_ts *cpu_net3;
+  struct network_ts *cpu_net4;
+  int i;
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  
+  cpu_net1 = gnet->cpu_net;
+  cpu_net2 = gnet->cpu_net2;
+  cpu_net3 = gnet->cpu_net3;
+  cpu_net4 = gnet->cpu_net4;
+  layer = gnet->layer + l;
+  n = gnet->layer[l].no_of_neurons;
+  np1=n+1;
+  
+  /* load the bias records  - quickly -- without using streamRead */
+  if (cpu_net1->layer[l].neuron_output[n] == 0.) /* if no bias */ {
+    kernel4_zero(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+  else {
+    kernel4_one(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)));
+    }
+    
+
+  if (l>0) {
+    int nlp1 = gnet->layer[l-1].no_of_neurons;
+    /* load the weight neurons  and the delta bias */
+    {
+      streamRead(gnet->layer[l].upper_lower_temp1_float,cpu_net1->layer[l].upper_lower_weight);
+      streamRead(gnet->layer[l].upper_lower_temp2_float,cpu_net2->layer[l].upper_lower_weight);
+      streamRead(gnet->layer[l].upper_lower_temp3_float,cpu_net3->layer[l].upper_lower_weight);
+      streamRead(gnet->layer[l].upper_lower_temp4_float,cpu_net4->layer[l].upper_lower_weight);
+      kernel_make_to_float4(gnet->layer[l].upper_lower_temp1_float,
+                            gnet->layer[l].upper_lower_temp2_float,
+			    gnet->layer[l].upper_lower_temp3_float,
+			    gnet->layer[l].upper_lower_temp4_float
+			    ,layer->upper_lower_weight);
+
+/*    We sill skip the deltas and make them zero for now  - faster*/
+      kernel4_zero(layer->upper_lower_delta);
+      
+      } /* block to load the weigh and delta neurons */
+    } /* if we are not the input layer */
+    
+  /* copy the learnign rate plus bias -- very importatnt */
+  streamRead(gnet->layer[i].neuron_temp_plus_bias_float1,cpu_net1->layer[i].neuron_learning_rate);
+  streamRead(gnet->layer[i].neuron_temp_plus_bias_float2,cpu_net2->layer[i].neuron_learning_rate);
+  streamRead(gnet->layer[i].neuron_temp_plus_bias_float3,cpu_net3->layer[i].neuron_learning_rate);
+  streamRead(gnet->layer[i].neuron_temp_plus_bias_float4,cpu_net4->layer[i].neuron_learning_rate);
+  kernel_make_to_float4(gnet->layer[i].neuron_temp_plus_bias_float1,
+                            gnet->layer[l].neuron_temp_plus_bias_float2,
+			    gnet->layer[l].neuron_temp_plus_bias_float3,
+			    gnet->layer[l].neuron_temp_plus_bias_float4
+			    ,layer->neuron_learning_rate_plus_bias);
+  }  /* for each layer */
+}
+
+
+
+
+
+
+
+
+
+
+void gpu_net_compute4(struct gpu_network_ts *gnet)
+/* Hibbard Michael Engler Nov 2006 
+This computes the network forward propogation -- all within the GPU memory.
+This should be fast if we do many computations with the same net.
+It is called internally,  as we need to do funky things to allocate the 
+GPU memory for a neural net 
+*/
+{
+  int l;
+  for (l = 1; l < gnet->no_of_layers; l++) {
+    struct gpu_layer_ts *lower;
+    struct gpu_layer_ts *upper;
+    int nu, nl;
+    int i;
+    float value;
+    float (*act) (float);
+   
+    lower = &gnet->layer[l-1];
+    upper = &gnet->layer[l];
+   
+    nu = upper->no_of_neurons;
+    nl = lower->no_of_neurons+1;
+
+    
+    kernel4_mul(upper->upper_lower_weight,lower->neuron_output_plus_bias,
+                upper->upper_lower_temp);
+
+    valid_reduce_sum4((upper->upper_lower_temp),nl,nu,(upper->activation_transformed));
+    
+    switch (upper->activation) { 
+      case NET_ACT_LOGISTIC:
+      case NET_ACT_LOGISTIC_STEP:
+        kernel4_sigma(upper->activation_transformed,upper->output_transformed);
+        break;
+      case NET_ACT_TANH:
+        kernel4_tanhp(upper->activation_transformed,upper->output_transformed);
+        break;
+      case NET_ACT_IDENTITY:
+        kernel4_identity(upper->activation_transformed,upper->output_transformed);
+        break;
+      default:
+        kernel4_identity(upper->activation_transformed,upper->output_transformed);
+      }
+    kernel4_transpose(upper->output_transformed,
+              upper->neuron_output);
+
+    } /* for each layer */
+} /* gpu_net_compute */
+
+
+#define GNET_COMPUTE_INPUT_LAYER4   layer=gnet->layer;  \
+  n= layer->no_of_neurons;\
+  np1=n+1;\
+{ STREAM4(neuron_output_plus_bias,1 , np1);\
+ DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float1,1 , np1);\
+ DOMINO(neuron_temp_float1,neuron_temp_plus_bias_float1,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float2,1 , np1);\
+ DOMINO(neuron_temp_float2,neuron_temp_plus_bias_float1,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float3,1 , np1);\
+ DOMINO(neuron_temp_float3,neuron_temp_plus_bias_float1,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float4,1 , np1);\
+ DOMINO(neuron_temp_float4,neuron_temp_plus_bias_float1,0,0,1,n);\
+   layer->neuron_output= neuron_output;\
+   layer->neuron_output_plus_bias= neuron_output_plus_bias;\
+   layer->neuron_temp_plus_bias_float1 = neuron_temp_plus_bias_float1;\
+   layer->neuron_temp_float1 = neuron_temp_float1;\
+   layer->neuron_temp_plus_bias_float2 = neuron_temp_plus_bias_float2;\
+   layer->neuron_temp_float2 = neuron_temp_float2;\
+   layer->neuron_temp_plus_bias_float3 = neuron_temp_plus_bias_float3;\
+   layer->neuron_temp_float3 = neuron_temp_float3;\
+   layer->neuron_temp_plus_bias_float4 = neuron_temp_plus_bias_float4;\
+   layer->neuron_temp_float4 = neuron_temp_float4;\
+
+ 
+ 
+#define GNET_COMPUTE_LAYER4A  nl=n;nlp1=np1;\
+ layer++;\
+ n = layer->no_of_neurons;\
+ np1=n+1;\
+{\
+        STREAM4(weight,n , nlp1);\
+        STREAM4(tempmv,n , nlp1);\
+        STREAM4(activation_transformed,n , 1);\
+        STREAM4(output_transformed,n , 1);\
+        STREAM4(neuron_output_plus_bias,1 , np1);\
+       DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n);\
+        STREAM1(neuron_temp_plus_bias_float1,1 , np1);\
+       DOMINO(neuron_temp_float1,neuron_temp_plus_bias_float1,0,0,1,n);\
+        STREAM1(neuron_temp_plus_bias_float2,1 , np1);\
+       DOMINO(neuron_temp_float2,neuron_temp_plus_bias_float2,0,0,1,n);\
+        STREAM1(neuron_temp_plus_bias_float3,1 , np1);\
+       DOMINO(neuron_temp_float3,neuron_temp_plus_bias_float3,0,0,1,n);\
+        STREAM1(neuron_temp_plus_bias_float4,1 , np1);\
+       DOMINO(neuron_temp_float4,neuron_temp_plus_bias_float4,0,0,1,n);\
+        STREAM1(upper_lower_temp1_float,n , nlp1);\
+        STREAM1(upper_lower_temp2_float,n , nlp1);\
+        STREAM1(upper_lower_temp3_float,n , nlp1);\
+        STREAM1(upper_lower_temp4_float,n , nlp1);
+
+
+
+#define GNET_COMPUTE_LAYER4B  \
+        layer->activation_transformed = activation_transformed;\
+        layer->output_transformed = output_transformed;\
+        layer->neuron_output= neuron_output;\
+        layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+        layer->upper_lower_weight = weight;\
+        layer->upper_lower_temp = tempmv;\
+	layer->upper_lower_temp1_float=upper_lower_temp1_float;\
+	layer->upper_lower_temp2_float=upper_lower_temp2_float;\
+	layer->upper_lower_temp3_float=upper_lower_temp3_float;\
+	layer->upper_lower_temp4_float=upper_lower_temp4_float;\
+        layer->neuron_temp_plus_bias_float1 = neuron_temp_plus_bias_float1;\
+        layer->neuron_temp_float1 = neuron_temp_float1;\
+        layer->neuron_temp_plus_bias_float2 = neuron_temp_plus_bias_float2;\
+        layer->neuron_temp_float2 = neuron_temp_float2;\
+        layer->neuron_temp_plus_bias_float3 = neuron_temp_plus_bias_float3;\
+        layer->neuron_temp_float3 = neuron_temp_float3;\
+        layer->neuron_temp_plus_bias_float4 = neuron_temp_plus_bias_float4;\
+        layer->neuron_temp_float4 = neuron_temp_float4;
+
+
+#define GNET_COMPUTE_LAYER4 GNET_COMPUTE_LAYER4A GNET_COMPUTE_LAYER4B
+
+
+#define GNET_COMPUTE_END_LAYER4 }   
+          
+
+#define GNET_COMPUTE_FROM_NET4(gnet,net1,net2,net3,net4) \
+{struct gpu_network_ts *gnet;\
+  struct gpu_layer_ts *layer;\
+  int i,l;\
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */\
+  int nl,nlp1;\
+  \
+  struct gpu_network_ts thenet;\
+  struct gpu_layer_ts layers[6];\
+  /* build the gnet version of the network */\
+  gnet = &thenet;\
+  gnet->no_of_layers = net1->no_of_layers;\
+  gnet->layer = layers;\
+  gnet->cpu_net = net1;\
+  gnet->cpu_net2 = net2;\
+  gnet->cpu_net3 = net3;\
+  gnet->cpu_net4 = net4;\
+  gnet->no_of_patterns = net1->no_of_patterns;\
+  gnet->momentum = net1->momentum;\
+  gnet->learning_rate = net1->learning_rate;\
+  gnet->input_layer = layers;\
+  gnet->output_layer = layers+gnet->no_of_layers-1;\
+  \
+  for (l=0;l<gnet->no_of_layers;l++) {\
+    gnet->layer[l].no_of_neurons = net1->layer[l].no_of_neurons;\
+    gnet->layer[l].no_of_neurons_plus_1 = net1->layer[l].no_of_neurons+1;\
+    gnet->layer[l].activation = net1->layer[l].activation;\
+    }
+
+
+#define GNET_COMPUTE_TO_NET4(gnet,net1,net2,net3,net4) 
+
+
+
+
+#define GNET_END4 }
+    
+
+
+
+
+extern void net_compute_fast4(struct network_ts *net1,
+  struct network_ts *net2,
+  struct network_ts *net3,
+  struct network_ts *net4,
+  const float *inputx, float *output1,
+  float *output2,float *output3,float *output4)
+{
+ if (net1->no_of_layers == 4)
+  {
+  GNET_COMPUTE_FROM_NET4(gnet,net1,net2,net3,net4);
+  GNET_COMPUTE_INPUT_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  GNET_COMPUTE_LAYER4;
+    
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute4(gnet);
+  net_load_gpu_input4 (gnet,inputx);
+
+  gpu_net_compute4(gnet);
+
+  if (output1 != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    {
+      float o1<n,1>;
+      float o2<n,1>;
+      float o3<n,1>;
+      float o4<n,1>;
+      kernel_split_from_float4(gnet->output_layer->neuron_output,o1,o2,o3,o4);
+      if (output1) streamWrite(gnet->output_layer->neuron_output,output1);
+      if (output2) streamWrite(gnet->output_layer->neuron_output,output2);
+      if (output3) streamWrite(gnet->output_layer->neuron_output,output3);
+      if (output4) streamWrite(gnet->output_layer->neuron_output,output4);
+      } /* block to pull out the output */
+    } /* if we have output */
+
+  GNET_COMPUTE_TO_NET4(gnet,net1,net2,net2,net4);
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_END4;  
+    
+  } /* if number of layers are 4 */
+ else if (net1->no_of_layers == 3)
+  {
+  GNET_COMPUTE_FROM_NET4(gnet,net1,net2,net3,net4);
+  GNET_COMPUTE_INPUT_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  GNET_COMPUTE_LAYER4;
+    
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute4(gnet);
+  net_load_gpu_input4 (gnet,inputx);
+
+  gpu_net_compute4(gnet);
+    
+
+  if (output1 != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    {
+      float o1<n,1>;
+      float o2<n,1>;
+      float o3<n,1>;
+      float o4<n,1>;
+      kernel_split_from_float4(gnet->output_layer->neuron_output,o1,o2,o3,o4);
+      if (output1) streamWrite(gnet->output_layer->neuron_output,output1);
+      if (output2) streamWrite(gnet->output_layer->neuron_output,output2);
+      if (output3) streamWrite(gnet->output_layer->neuron_output,output3);
+      if (output4) streamWrite(gnet->output_layer->neuron_output,output4);
+      } /* block to pull out the output */
+    } /* if we have output */
+
+  GNET_COMPUTE_TO_NET4(gnet,net1,net2,net3,net4);
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_END4;  
+    
+  } /* if number of layers are 3 */
+else {
+  net_compute(net1,inputx,output1);
+  net_compute(net2,inputx,output2);
+  net_compute(net3,inputx,output3);
+  net_compute(net4,inputx,output4);
+  }
+}
+
+
+
+
+
+
+
+
+
+#define GNET_LEARN_INPUT_LAYER4   layer=gnet->layer;  \
+  n= layer->no_of_neurons;\
+  np1=n+1;\
+ { STREAM4(neuron_output_plus_bias,1 , np1);\
+ DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n);\
+  STREAM4(neuron_error_plus_bias,1 , np1);\
+ DOMINO(neuron_error,neuron_error_plus_bias,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float1,1 , np1);\
+ DOMINO(neuron_temp_float1,neuron_temp_plus_bias_float1,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float2,1 , np1);\
+ DOMINO(neuron_temp_float2,neuron_temp_plus_bias_float2,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float3,1 , np1);\
+ DOMINO(neuron_temp_float3,neuron_temp_plus_bias_float3,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float4,1 , np1);\
+ DOMINO(neuron_temp_float4,neuron_temp_plus_bias_float4,0,0,1,n);\
+  STREAM4(neuron_learning_rate_plus_bias,1 , np1);\
+  DOMINO(neuron_learning_rate,neuron_learning_rate_plus_bias,0,0,1,n);\
+  layer->neuron_output= neuron_output;\
+  layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+  layer->neuron_error= neuron_error;\
+  layer->neuron_error_plus_bias = neuron_error_plus_bias;\
+  layer->neuron_learning_rate_plus_bias = neuron_learning_rate_plus_bias;\
+  layer->neuron_learning_rate = neuron_learning_rate;\
+  layer->neuron_temp_plus_bias_float1 = neuron_temp_plus_bias_float1;\
+  layer->neuron_temp_float1 = neuron_temp_float1;\
+  layer->neuron_temp_plus_bias_float2 = neuron_temp_plus_bias_float2;\
+  layer->neuron_temp_float2 = neuron_temp_float2;\
+  layer->neuron_temp_plus_bias_float3 = neuron_temp_plus_bias_float3;\
+  layer->neuron_temp_float3 = neuron_temp_float3;\
+  layer->neuron_temp_plus_bias_float4 = neuron_temp_plus_bias_float4;\
+  layer->neuron_temp_float4 = neuron_temp_float4;\
+
+  
+ 
+ 
+#define GNET_LEARN_LAYER4A nl=n;nlp1=np1;\
+ layer++;\
+ n = layer->no_of_neurons;\
+ np1=n+1;\
+{\
+        STREAM4(weight,n , nlp1);\
+        STREAM4(delta,n , nlp1);\
+        STREAM4(tempmv,n , nlp1);\
+        STREAM4(activation_transformed,n , 1);\
+        STREAM4(output_transformed,n , 1);\
+        STREAM4(derivitave_plus_bias,1 , np1);\
+        STREAM4(error_temp_plus_bias,1 , np1);\
+        STREAM4(neuron_output_plus_bias,1 , np1);\
+       DOMINO(neuron_output,neuron_output_plus_bias,0,0,1,n);\
+  STREAM4(neuron_learning_rate_plus_bias,1 , np1);\
+ DOMINO(neuron_learning_rate,neuron_learning_rate_plus_bias,0,0,1,n);\
+       DOMINO(derivitave,derivitave_plus_bias,0,0,1,n);\
+       DOMINO(error_temp,error_temp_plus_bias,0,0,1,n);
+
+
+
+#define GNET_LEARN_LAYER4B       STREAM4(neuron_error_plus_bias,1 , np1);\
+       DOMINO(neuron_error,neuron_error_plus_bias,0,0,1,n);\
+        STREAM1(neuron_temp_plus_bias_float1,1 , np1);\
+       DOMINO(neuron_temp_float1,neuron_temp_plus_bias_float1,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float2,1 , np1);\
+ DOMINO(neuron_temp_float2,neuron_temp_plus_bias_float2,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float3,1 , np1);\
+ DOMINO(neuron_temp_float3,neuron_temp_plus_bias_float3,0,0,1,n);\
+  STREAM1(neuron_temp_plus_bias_float4,1 , np1);\
+ DOMINO(neuron_temp_float4,neuron_temp_plus_bias_float4,0,0,1,n);\
+        STREAM1(upper_lower_temp1_float,n , nlp1);\
+        STREAM1(upper_lower_temp2_float,n , nlp1);\
+        STREAM1(upper_lower_temp3_float,n , nlp1);\
+        STREAM1(upper_lower_temp4_float,n , nlp1);
+
+
+#define GNET_LEARN_LAYER4C	\
+        layer->neuron_output= neuron_output;\
+        layer->derivitave= derivitave;\
+        layer->error_temp= error_temp;\
+        layer->activation_transformed = activation_transformed;\
+        layer->output_transformed = output_transformed;\
+        layer->derivitave_plus_bias= derivitave_plus_bias;\
+        layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+	layer->error_temp_plus_bias = error_temp_plus_bias;\
+        layer->upper_lower_weight = weight;\
+        layer->upper_lower_delta = delta;\
+        layer->upper_lower_temp = tempmv;\
+  layer->neuron_learning_rate_plus_bias = neuron_learning_rate_plus_bias;\
+  layer->neuron_learning_rate = neuron_learning_rate;\
+        layer->neuron_error= neuron_error;\
+        layer->neuron_error_plus_bias = neuron_error_plus_bias;\
+        layer->neuron_temp_plus_bias_float1 = neuron_temp_plus_bias_float1;\
+        layer->neuron_temp_float1 = neuron_temp_float1;\
+  layer->neuron_temp_float2 = neuron_temp_float2;\
+  layer->neuron_temp_plus_bias_float3 = neuron_temp_plus_bias_float3;\
+  layer->neuron_temp_float3 = neuron_temp_float3;\
+  layer->neuron_temp_plus_bias_float4 = neuron_temp_plus_bias_float4;\
+  layer->neuron_temp_float4 = neuron_temp_float4;\
+	layer->upper_lower_temp1_float=upper_lower_temp1_float;\
+	layer->upper_lower_temp2_float=upper_lower_temp2_float;\
+	layer->upper_lower_temp3_float=upper_lower_temp3_float;\
+	layer->upper_lower_temp4_float=upper_lower_temp4_float;
+
+	
+#define GNET_LEARN_LAYER4 \
+GNET_LEARN_LAYER4A \
+GNET_LEARN_LAYER4B \
+GNET_LEARN_LAYER4C \
+
+				
+
+#define GNET_LEARN_END_LAYER4 }          
+          
+
+#define GNET_LEARN_FROM_NET4(gnet,net1,net2,net3,net4) \
+{struct gpu_network_ts *gnet;\
+  struct gpu_layer_ts *layer;\
+  int i,l;\
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */\
+  int nl,nlp1;\
+  \
+  struct gpu_network_ts thenet;\
+  struct gpu_layer_ts layers[6];\
+  STREAM4(target_stream,1 , net1->output_layer->no_of_neurons);\
+  STREAM4(global_error,1 , 1);\
+  /* build the gnet version of the network */\
+  gnet = &thenet;\
+  gnet->no_of_layers = net1->no_of_layers;\
+  gnet->layer = layers;\
+  gnet->cpu_net = net1;\
+  gnet->cpu_net2 = net2;\
+  gnet->cpu_net3 = net3;\
+  gnet->cpu_net4 = net4;\
+  gnet->no_of_patterns = net1->no_of_patterns;\
+  gnet->momentum = net1->momentum;\
+  gnet->learning_rate = net1->learning_rate;\
+  gnet->input_layer = layers;\
+  gnet->output_layer = layers +net1->no_of_layers-1;\
+  \
+  for (l=0;l<gnet->no_of_layers;l++) {\
+    gnet->layer[l].no_of_neurons = net1->layer[l].no_of_neurons;\
+    gnet->layer[l].no_of_neurons_plus_1 = net1->layer[l].no_of_neurons+1;\
+    gnet->layer[l].activation = net1->layer[l].activation;\
+    }\
+  gnet->global_error=global_error;\
+  gnet->target=target_stream;
+
+
+#define GNET_LEARN_TO_NET4(gnet,net1,net2,net3,net4) \
+net1->no_of_patterns = gnet->no_of_patterns;\
+net2->no_of_patterns = gnet->no_of_patterns;\
+net3->no_of_patterns = gnet->no_of_patterns;\
+net4->no_of_patterns = gnet->no_of_patterns;\
+{\
+  float4 temp;\
+  streamWrite(gnet->global_error,&temp);\
+  net1->global_error=temp.x;\
+  net2->global_error=temp.y;\
+  net3->global_error=temp.z;\
+  net4->global_error=temp.w;\
+  }\
+for (l=0;l<gnet->no_of_layers;l++) {\
+  if (l) {\
+    kernel_split_from_float4(gnet->layer[l].upper_lower_weight,\
+          gnet->layer[l].upper_lower_temp1_float,\
+          gnet->layer[l].upper_lower_temp2_float,\
+          gnet->layer[l].upper_lower_temp3_float,\
+          gnet->layer[l].upper_lower_temp4_float);\
+    streamWrite(gnet->layer[l].upper_lower_temp1_float,net1->layer[l].upper_lower_weight);\
+    streamWrite(gnet->layer[l].upper_lower_temp2_float,net2->layer[l].upper_lower_weight);\
+    streamWrite(gnet->layer[l].upper_lower_temp3_float,net3->layer[l].upper_lower_weight);\
+    streamWrite(gnet->layer[l].upper_lower_temp4_float,net4->layer[l].upper_lower_weight);\
+/*we skip the deltas for more speed */\
+    }\
+  net1->layer[l].activation = gnet->layer[l].activation;\
+  net2->layer[l].activation = gnet->layer[l].activation;\
+  net3->layer[l].activation = gnet->layer[l].activation;\
+  net4->layer[l].activation = gnet->layer[l].activation;\
+  }
+
+
+#define GNET_END4 }
+
+
+
+
+    
+	
+
+		
+		    
+void gpu_net_compute_output_error4(struct gpu_network_ts *gnet) {
+struct gpu_layer_ts *upper=gnet->output_layer;
+int n=upper->no_of_neurons;
+kernel_subtract4(gnet->target,upper->neuron_output,
+                         upper->error_temp);
+switch (gnet->output_layer->activation) { 
+        case NET_ACT_LOGISTIC:
+        case NET_ACT_LOGISTIC_STEP:
+          kernel4_d_sigma(upper->neuron_output,upper->neuron_error);
+          break;
+        case NET_ACT_TANH:
+          kernel4_d_tanhp(upper->neuron_output,upper->neuron_error);
+          break;
+        case NET_ACT_IDENTITY:
+          kernel4_d_identity(upper->neuron_output,upper->neuron_error);
+	  break;
+        default:
+          kernel4_d_identity(upper->neuron_output,upper->neuron_error);
+        }
+        
+kernel4_mul( upper->neuron_error
+            ,upper->error_temp,
+	    upper->neuron_error);
+
+/* figure out the global error */        
+kernel4_sum_square_over_2(upper->neuron_error,upper->error_temp);
+valid_reduce_sum_inverse4(upper->error_temp,n,1,gnet->global_error);
+}
+
+
+
+
+
+void gpu_net_backprop_error4(struct gpu_network_ts *gnet,int l) {
+/* Compute the lower level errors */
+if (l >1) { /* only for the upper levels,  don't need to know the error levels
+                      on the bottom -- although it might be interesting */
+        /* errora = sum(weight * uppererror) */              
+  struct gpu_layer_ts *upper = gnet->layer+l;
+  struct gpu_layer_ts *lower = gnet->layer+l-1;
+  int nl=lower->no_of_neurons; 
+  int nu=upper->no_of_neurons; 
+  /* we are sharing the activation_transformed record */
+  kernel4_transpose(upper->neuron_error
+                  ,upper->activation_transformed);
+  kernel4_mul(upper->upper_lower_weight,upper->activation_transformed,upper->upper_lower_temp);
+//  kernel_zero(lower->error_temp_plus_bias);
+  valid_reduce_sum_inverse4(upper->upper_lower_temp,nu,nl+1,lower->error_temp_plus_bias);
+       
+  /* derivitave = dy/dx(output)  which varies based on the function */
+  switch (lower->activation) { 
+          case NET_ACT_LOGISTIC:
+          case NET_ACT_LOGISTIC_STEP:
+            kernel4_d_sigma(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          case NET_ACT_TANH:
+            kernel4_d_tanhp(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          case NET_ACT_IDENTITY:
+            kernel4_d_identity(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          default:
+            kernel4_d_identity(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+          }
+
+        /* errors = errora* derivitave */
+        kernel4_mul(lower->error_temp_plus_bias
+	  ,lower->neuron_error_plus_bias
+	     ,lower->neuron_error_plus_bias);  
+	     
+	     
+  } /* if we need to compute errors for the lower level */ 
+
+}			
+			    			    			    
+				
+
+
+
+
+void gpu_net_adjust_weights4(struct gpu_network_ts *gnet,int l) {
+struct gpu_layer_ts *upper = gnet->layer+l;
+struct gpu_layer_ts *lower = gnet->layer+l-1;
+int n=upper->no_of_neurons;
+
+/* then adjust the weights.
+   Note -  some theories have the weights adjusted first,  then the backward pass */
+/* delta = lr * error * lower output + momentum * delta */
+if (l<=1) {
+  /* we are sharing the activation_transformed record */
+  kernel4_mul(????
+  kernel4_transpose(upper->neuron_error,upper->activation_transformed);
+  }
+/* we are also using the output_transformed record :)*/
+
+  kernel4_mul(lower->neuron_output_plus_bias,lower->neuron_learning_rate_plus_bias,lower->error_temp_plus_bias);
+  
+
+  kernel4_compute_delta(gnet->learning_rate,
+                    upper->activation_transformed, 
+		    lower->error_temp_plus_bias, /* neuron_output * neuron_learning_rate */
+		    gnet->momentum,
+		    upper->upper_lower_delta,
+		    upper->upper_lower_delta);
+  		    
+kernel4_add(upper->upper_lower_weight,
+           upper->upper_lower_delta,
+	   upper->upper_lower_weight); 
+
+}			
+
+
+
+
+
+void gpu_net_learn4(struct gpu_network_ts *gnet) 
+{					
+int l;
+gpu_net_compute_output_error4(gnet);
+for (l=gnet->no_of_layers-1;l>0;l--) {
+  if (l>1) gpu_net_backprop_error4(gnet,l);
+  gpu_net_adjust_weights4(gnet,l);
+  }
+}					   					    
+
+
+
+void net_learn_cycle_fast4(
+	struct network_ts *net1, 
+	struct network_ts *net2, 
+	struct network_ts *net3, 
+	struct network_ts *net4, 
+	  const float *inputx, 
+	  const float *targetx,
+	  int epochs,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int accuracy_first_output,
+	  int accuracy_skip_offset,
+	  int no_accuracies
+	  )
+{
+int u;
+int ll;
+int size_in_floats_input;
+int size_in_floats_target;
+int size_in_floats_accuracy;
+int target_overlap;
+
+
+/* The fast method only works for 2 layer and 3 layer modes */
+if( (net1->no_of_layers != 3)&&(net1->no_of_layers != 4)) {
+   net_learn_cycle(net1,inputx,targetx,epochs,iterations,next_input_offset,
+   next_output_offset,accuracy_start,accuracy_first_output,accuracy_skip_offset,no_accuracies);
+   net_learn_cycle(net2,inputx,targetx,epochs,iterations,next_input_offset,
+   next_output_offset,accuracy_start,accuracy_first_output,accuracy_skip_offset,no_accuracies);
+   net_learn_cycle(net3,inputx,targetx,epochs,iterations,next_input_offset,
+   next_output_offset,accuracy_start,accuracy_first_output,accuracy_skip_offset,no_accuracies);
+   net_learn_cycle(net4,inputx,targetx,epochs,iterations,next_input_offset,
+   next_output_offset,accuracy_start,accuracy_first_output,accuracy_skip_offset,no_accuracies);
+   return;
+   }
+
+
+/* OK we need to store the input data and the target data. */
+size_in_floats_input=net1->input_layer->no_of_neurons + next_input_offset * (iterations-1);
+target_overlap= (((inputx + size_in_floats_input) > targetx)&&(inputx <=targetx));
+/* special case here -- we overlap.  so we will make the packed records
+   together and share them */
+
+
+
+
+
+/* Now allocate the gnet and all the streams to be able to compute stuff */  
+
+ if (net1->no_of_layers == 4)
+  {
+  GNET_LEARN_FROM_NET4(gnet,net1,net2,net3,net4);
+  GNET_LEARN_INPUT_LAYER4;
+  GNET_LEARN_LAYER4;
+  GNET_LEARN_LAYER4;
+  GNET_LEARN_LAYER4;
+
+  
+  /* done allocating.  Now lets get the data in */
+
+  net_load_gpu_for_train4(gnet);
+  DOMINO(keep_input,gnet->input_layer->neuron_output,0,next_input_offset,1,gnet->input_layer->no_of_neurons);
+  DOMINO(old_input,gnet->input_layer->neuron_output,0,0,1,gnet->input_layer->no_of_neurons-next_input_offset);
+  DOMINO(new_input,gnet->input_layer->neuron_output,0,gnet->input_layer->no_of_neurons-next_input_offset
+        ,1,gnet->input_layer->no_of_neurons);
+
+  DOMINO(computed_accuracy,gnet->output_layer->neuron_output,0,accuracy_start,1,accuracy_start+no_accuracies*accuracy_start);
+  DOMINO(computed_output,gnet->output_layer->neuron_output,0,0,1,accuracy_start);
+  STREAM1(newinput1,1,next_input_offset); /* temp stream to move the input along */
+  STREAM4(newinput4,1,next_input_offset); /* temp stream to move the input along */
+  STREAM4(sss,1,gnet->input_layer->no_of_neurons-accuracy_start); /* temp stream to move the input along */
+  DOMINO(target1_output_section,gnet->output_layer->neuron_temp_float1,0,0,1,accuracy_start);
+  DOMINO(target_output_section,gnet->target,0,0,1,accuracy_start);
+  DOMINO(target_accuracy_section,gnet->target,0,accuracy_start,1,gnet->output_layer->no_of_neurons);
+    
+  for (ll=0;ll<epochs;ll++) {
+   for (i=0;i<iterations;i++) {
+    if (i&&target_overlap) { /* we need to shift */
+      /* shift the input over and append the output */
+      copy4(keep_input,sss);
+      streamRead(newinput1,((float *)inputx)+(i-1)*next_input_offset+gnet->input_layer->no_of_neurons);
+      kernel_expand_to_float4(newinput1,newinput4);
+      copy4(newinput4,new_input);
+      copy4(sss,old_input);
+      }
+    else { /* initial read,  and subsequent read if no shifting */
+      streamRead(gnet->input_layer->neuron_temp_float1,(float *)inputx+i*next_input_offset);
+      kernel_expand_to_float4(gnet->input_layer->neuron_temp_float1,gnet->input_layer->neuron_output);
+      }
+    
+    gpu_net_compute4(gnet);
+    if (no_accuracies) {
+      streamRead(target1_output_section,
+         (float *)targetx+i*next_output_offset);
+      kernel_expand_to_float4(target1_output_section,target_output_section);
+      
+      kernel_compute_accuracy4( gnet->output_layer->neuron_output, // output
+                              gnet->target, // target
+			      target_accuracy_section,
+			      (float)accuracy_first_output,(float)accuracy_skip_offset,(float)accuracy_start);
+			      
+      }
+    else {
+      streamRead(gnet->output_layer->neuron_temp_float1,(float *)targetx+i*next_output_offset);
+      kernel_expand_to_float4(gnet->output_layer->neuron_temp_float1,gnet->target);      
+      }
+    gpu_net_learn4(gnet);
+    } /* each iteration down the samples provided */
+   } /* each loop */
+  GNET_LEARN_TO_NET4(gnet,net1,net2,net3,net4);
+  GNET_LEARN_END_LAYER4;
+  GNET_LEARN_END_LAYER4;
+  GNET_LEARN_END_LAYER4;
+  GNET_LEARN_END_LAYER4;
+  GNET_END4;  
+    
+  } /* if number of layers are 4 */
+ if (net1->no_of_layers == 3)
+  {
+  GNET_LEARN_FROM_NET4(gnet,net1,net2,net3,net4);
+  GNET_LEARN_INPUT_LAYER4;
+  GNET_LEARN_LAYER4;
+  GNET_LEARN_LAYER4;
+
+  
+  /* done allocating.  Now lets get the data in */
+
+  net_load_gpu_for_train4(gnet);
+  DOMINO(keep_input,gnet->input_layer->neuron_output,0,next_input_offset,1,gnet->input_layer->no_of_neurons);
+  DOMINO(old_input,gnet->input_layer->neuron_output,0,0,1,gnet->input_layer->no_of_neurons-next_input_offset);
+  DOMINO(new_input,gnet->input_layer->neuron_output,0,gnet->input_layer->no_of_neurons-next_input_offset
+        ,1,gnet->input_layer->no_of_neurons);
+
+  DOMINO(computed_accuracy,gnet->output_layer->neuron_output,0,accuracy_start,1,accuracy_start+no_accuracies*accuracy_start);
+  DOMINO(computed_output,gnet->output_layer->neuron_output,0,0,1,accuracy_start);
+  STREAM1(newinput1,1,next_input_offset); /* temp stream to move the input along */
+  STREAM4(newinput4,1,next_input_offset); /* temp stream to move the input along */
+  STREAM4(sss,1,gnet->input_layer->no_of_neurons-accuracy_start); /* temp stream to move the input along */
+  DOMINO(target1_output_section,gnet->output_layer->neuron_temp_float1,0,0,1,accuracy_start);
+  DOMINO(target_output_section,gnet->target,0,0,1,accuracy_start);
+  DOMINO(target_accuracy_section,gnet->target,0,accuracy_start,1,gnet->output_layer->no_of_neurons);
+    
+  for (ll=0;ll<epochs;ll++) {
+   for (i=0;i<iterations;i++) {
+    if (i&&target_overlap) { /* we need to shift */
+      /* shift the input over and append the output */
+      copy4(keep_input,sss);
+      streamRead(newinput1,((float *)inputx)+(i-1)*next_input_offset+gnet->input_layer->no_of_neurons);
+      kernel_expand_to_float4(newinput1,newinput4);
+      copy4(newinput4,new_input);
+      copy4(sss,old_input);
+      }
+    else { /* initial read,  and subsequent read if no shifting */
+      streamRead(gnet->input_layer->neuron_temp_float1,(float *)inputx+i*next_input_offset);
+      kernel_expand_to_float4(gnet->input_layer->neuron_temp_float1,gnet->input_layer->neuron_output);
+      }
+    
+    gpu_net_compute4(gnet);
+    if (no_accuracies) {
+      streamRead(target1_output_section,
+         (float *)targetx+i*next_output_offset);
+      kernel_expand_to_float4(target1_output_section,target_output_section);
+      
+      kernel_compute_accuracy4( gnet->output_layer->neuron_output, // output
+                              gnet->target, // target
+			      target_accuracy_section,
+			      (float)accuracy_first_output,(float)accuracy_skip_offset,(float)accuracy_start);
+			      
+      }
+    else {
+      streamRead(gnet->output_layer->neuron_temp_float1,(float *)targetx+i*next_output_offset);
+      kernel_expand_to_float4(gnet->output_layer->neuron_temp_float1,gnet->target);      
+      }
+    gpu_net_learn4(gnet);
+    } /* each iteration down the samples provided */
+   } /* each loop */
+  GNET_LEARN_TO_NET4(gnet,net1,net2,net3,net4);
+  GNET_LEARN_END_LAYER4;
+  GNET_LEARN_END_LAYER4;
+  GNET_LEARN_END_LAYER4;
+  GNET_END4;  
+    
+  } /* if number of layers are 3 */
+}
+
+
+
+
+
+
+
+
+void net_run_batch_fast4(
+	struct network_ts *net1, 
+	struct network_ts *net2, 
+	struct network_ts *net3, 
+	struct network_ts *net4, 
+	  const float *inputx, 
+	  float *output1x,float *output2x,float *output3x,float *output4x,
+	  float *accuracies1x,float *accuracies2x,float *accuracies3x,float *accuracies4x,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int no_accuracies
+	  )
+{
+int u;
+int ll;
+
+int size_in_floats_input;
+int size_in_floats_input_other;
+int size_in_floats_output;
+int size_in_floats_accuracy;
+int size_in_floats_with_output;
+int output_overlap;
+float4 *output_copy;
+float4 *accuracy_copy;
+
+/* The fast method only works for 2 layer and 3 layer modes */
+if( (net1->no_of_layers != 3)&&(net1->no_of_layers != 4)) {
+   net_run_batch(net1,inputx,output1x,accuracies1x,iterations,next_input_offset,next_output_offset,
+     accuracy_start,no_accuracies);
+   net_run_batch(net2,inputx,output2x,accuracies2x,iterations,next_input_offset,next_output_offset,
+     accuracy_start,no_accuracies);
+   net_run_batch(net3,inputx,output3x,accuracies3x,iterations,next_input_offset,next_output_offset,
+     accuracy_start,no_accuracies);
+   net_run_batch(net4,inputx,output4x,accuracies4x,iterations,next_input_offset,next_output_offset,
+     accuracy_start,no_accuracies);
+   return;
+   }
+   
+   
+/* OK we need to store the input data and the target data. */
+/* special case here -- we overlap.  so we will make the packed records
+   together and share them */
+size_in_floats_input=net1->input_layer->no_of_neurons + next_input_offset * (iterations-1);
+output_overlap= (((inputx + size_in_floats_input) > output1x)&&(inputx <=output1x));
+/* special case here -- we overlap.  so we will make the packed records
+   together and share them */
+
+size_in_floats_output=net1->output_layer->no_of_neurons +  next_output_offset * (iterations-1);
+output_copy=(float4 *)malloc(sizeof(float4)*size_in_floats_output);
+
+if (accuracies1x) {
+  size_in_floats_accuracy = no_accuracies * (iterations);
+  accuracy_copy=(float4 *)malloc(sizeof(float4)*size_in_floats_accuracy);
+  }
+
+
+/* OK,  now we have 3 arrays.  An array of inputs,  an array of outputs,  and an array of accuracies (if applicable)
+The output might be the same as the input array - we don't care.  It will still work.
+So now, we must transfer the input,  load the data,  transfer the output.
+*/
+
+ if (net1->no_of_layers == 4)
+  {
+  int accuracy_psuedo_start;
+  GNET_COMPUTE_FROM_NET4(gnet,net1,net2,net3,net4);
+  GNET_COMPUTE_INPUT_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  {
+  accuracy_psuedo_start = accuracy_start;
+  if (no_accuracies==0) {
+    /* need to fudge the psuedo start so that the domain of computed_accuracy is a valid domain
+     we won't use it,  but we stilldefine it */
+     accuracy_psuedo_start--;
+     }
+  DOMINO(keep_input,gnet->input_layer->neuron_output,0,accuracy_start,1,gnet->input_layer->no_of_neurons);
+  DOMINO(old_input,gnet->input_layer->neuron_output,0,0,1,gnet->input_layer->no_of_neurons-accuracy_start);
+  DOMINO(new_input,gnet->input_layer->neuron_output,0,gnet->input_layer->no_of_neurons-accuracy_start
+        ,1,gnet->input_layer->no_of_neurons);
+  /* xxxxxxxxkeep input
+             //    
+     old input newinput
+ */
+  DOMINO(computed_accuracy,gnet->output_layer->neuron_output,0,accuracy_psuedo_start,1,accuracy_start+no_accuracies*accuracy_start);
+  DOMINO(computed_output,gnet->output_layer->neuron_output,0,0,1,accuracy_start);
+  STREAM4(sss,1,gnet->input_layer->no_of_neurons-accuracy_start); /* temp stream to move the input along */
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute4(gnet);
+
+  /* read in our very first input */
+  for (i=0;i<iterations;i++) {
+    if (i&&output_overlap) { /* we need to shift */
+      /* shift the input over and append the output */
+      copy4(keep_input,sss);
+      copy4(computed_output,new_input);
+      copy4(sss,old_input);
+      }
+    else { /* initial read,  and subsequent read if no shifting */
+      streamRead(gnet->input_layer->neuron_temp_float1,(float *)inputx+i*next_input_offset);
+      kernel_expand_to_float4(gnet->input_layer->neuron_temp_float1,gnet->input_layer->neuron_output);
+      }
+    gpu_net_compute4(gnet);
+    if (no_accuracies) {
+      streamWrite(computed_accuracy,accuracy_copy+i *  next_output_offset); 
+      } 
+    streamWrite(computed_output,output_copy + i* next_output_offset);
+
+    } /* each iteration down the samples provided */
+  }/*block */
+  GNET_COMPUTE_TO_NET4(gnet,net1,net2,net3,net4);
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_END4;    
+  } /* if number of layers are 4 */
+
+
+ if (net1->no_of_layers == 3)
+  {
+  int accuracy_psuedo_start;
+  GNET_COMPUTE_FROM_NET4(gnet,net1,net2,net3,net4);
+  GNET_COMPUTE_INPUT_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  GNET_COMPUTE_LAYER4;
+  {
+  accuracy_psuedo_start = accuracy_start;
+  if (no_accuracies==0) {
+    /* need to fudge the psuedo start so that the domain of computed_accuracy is a valid domain
+     we won't use it,  but we stilldefine it */
+     accuracy_psuedo_start--;
+     }
+  DOMINO(keep_input,gnet->input_layer->neuron_output,0,accuracy_start,1,gnet->input_layer->no_of_neurons);
+  DOMINO(old_input,gnet->input_layer->neuron_output,0,0,1,gnet->input_layer->no_of_neurons-accuracy_start);
+  DOMINO(new_input,gnet->input_layer->neuron_output,0,gnet->input_layer->no_of_neurons-accuracy_start
+        ,1,gnet->input_layer->no_of_neurons);
+  /* xxxxxxxxkeep input
+             //    
+     old input newinput
+ */
+  DOMINO(computed_accuracy,gnet->output_layer->neuron_output,0,accuracy_psuedo_start,1,accuracy_start+no_accuracies*accuracy_start);
+  DOMINO(computed_output,gnet->output_layer->neuron_output,0,0,1,accuracy_start);
+  STREAM4(sss,1,gnet->input_layer->no_of_neurons-accuracy_start); /* temp stream to move the input along */
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute4(gnet);
+
+  /* read in our very first input */
+  for (i=0;i<iterations;i++) {
+    if (i&&output_overlap) { /* we need to shift */
+      /* shift the input over and append the output */
+      copy4(keep_input,sss);
+      copy4(computed_output,new_input);
+      copy4(sss,old_input);
+      }
+    else { /* initial read,  and subsequent read if no shifting */
+      streamRead(gnet->input_layer->neuron_temp_float1,(float *)inputx+i*next_input_offset);
+      kernel_expand_to_float4(gnet->input_layer->neuron_temp_float1,gnet->input_layer->neuron_output);
+      }
+
+    gpu_net_compute4(gnet);
+    if (no_accuracies) {
+      streamWrite(computed_accuracy,accuracy_copy+i *  next_output_offset); 
+      } 
+    streamWrite(computed_output,output_copy + i* next_output_offset);
+
+    } /* each iteration down the samples provided */
+  }/*block */
+  GNET_COMPUTE_TO_NET4(gnet,net1,net2,net3,net4);
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_COMPUTE_END_LAYER4;
+  GNET_END4;    
+  } /* if number of layers are 3 */
+
+
+/* now put the data back for output and possibly accuracy */
+{
+  int i;
+  for (i=0;i<iterations;i++) {
+    float4 f;
+    f=output_copy[i];
+    output1x[i]=f.x;
+    output2x[i]=f.y;
+    output3x[i]=f.z;
+    output4x[i]=f.w;
+    if (accuracies1x) {
+      float4 f;
+      f=accuracy_copy[i];
+      accuracies1x[i]=f.x;
+      accuracies2x[i]=f.y;
+      accuracies3x[i]=f.z;
+      accuracies4x[i]=f.w;
+      }
+    }
+  free(output_copy);
+  if (accuracies1x)
+    free(accuracy_copy);
+  }
+
+/* done. */
+
+}
+
+
+
+#define GNET_SPECIAL_TO_NET4(gnet,net1,net2,net3,net4) \
+{\
+  float4 temp;\
+  streamWrite(gnet->global_error,&temp);\
+  net1->global_error=temp.x;\
+  net2->global_error=temp.y;\
+  net3->global_error=temp.z;\
+  net4->global_error=temp.w;\
+  }\
+
+
+
+void net_compute_special_error_fast4(
+	struct network_ts *net1, 
+	struct network_ts *net2, 
+	struct network_ts *net3, 
+	struct network_ts *net4, 
+	  const float *inputx, 
+	  const float *targetx,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_first_output,
+	  int accuracy_skip_offset,
+	  int no_accuracies
+	  )
+{
+int u;
+int ll;
+int size_in_floats_input;
+int size_in_floats_target;
+int size_in_floats_accuracy;
+int target_overlap;
+
+
+/* The fast method only works for 2 layer and 3 layer modes */
+if( (net1->no_of_layers != 3)&&(net1->no_of_layers != 4)) {
+  fprintf(stderr,"no - need 3 or 4 layer node for this!\n");
+   exit(-1);
+   }
+
+
+/* OK we need to store the input data and the target data. */
+size_in_floats_input=net1->input_layer->no_of_neurons + next_input_offset * (iterations-1);
+target_overlap= (((inputx + size_in_floats_input) > targetx)&&(inputx <=targetx));
+/* special case here -- we overlap.  so we will make the packed records
+   together and share them */
+
+
+
+
+
+/* Now allocate the gnet and all the streams to be able to compute stuff */  
+
+ if (net1->no_of_layers == 3)
+  {
+  GNET_LEARN_FROM_NET4(gnet,net1,net2,net3,net4);
+  GNET_LEARN_INPUT_LAYER4;
+  GNET_LEARN_LAYER4;
+  GNET_LEARN_LAYER4;
+
+  
+  /* done allocating.  Now lets get the data in */
+
+  net_load_gpu_for_train4(gnet);
+  DOMINO(keep_input,gnet->input_layer->neuron_output,0,next_input_offset,1,gnet->input_layer->no_of_neurons);
+  DOMINO(old_input,gnet->input_layer->neuron_output,0,0,1,gnet->input_layer->no_of_neurons-next_input_offset);
+  DOMINO(new_input,gnet->input_layer->neuron_output,0,gnet->input_layer->no_of_neurons-next_input_offset
+        ,1,gnet->input_layer->no_of_neurons);
+
+  STREAM1(newinput1,1,next_input_offset); /* temp stream to move the input along */
+  STREAM4(newinput4,1,next_input_offset); /* temp stream to move the input along */
+  STREAM4(sss,1,gnet->input_layer->no_of_neurons-next_input_offset); /* temp stream to move the input along */
+  DOMINO(target1_output_section,gnet->output_layer->neuron_temp_float1,0,0,1,gnet->output_layer->no_of_neurons-next_output_offset);
+  DOMINO(target_output_section,gnet->target,0,0,1,gnet->output_layer->no_of_neurons-next_output_offset);
+  STREAM4(target_accuracy_section,1,no_accuracies);
+  STREAM4(accuracysum,1,1);
+  STREAM4(accuracy_current,1,1);
+
+  
+    kernel4_zero(accuracysum);  
+   for (i=0;i<iterations;i++) {
+    if (i&&target_overlap) { /* we need to shift */
+      /* shift the input over and append the output */
+      copy4(keep_input,sss);
+      streamRead(newinput1,((float *)inputx)+(i-1)*next_input_offset+gnet->input_layer->no_of_neurons);
+      kernel_expand_to_float4(newinput1,newinput4);
+      copy4(newinput4,new_input);
+      copy4(sss,old_input);
+      }
+    else { /* initial read,  and subsequent read if no shifting */
+      streamRead(gnet->input_layer->neuron_temp_float1,(float *)inputx+i*next_input_offset);
+      kernel_expand_to_float4(gnet->input_layer->neuron_temp_float1,gnet->input_layer->neuron_output);
+      }
+    gpu_net_compute4(gnet);
+    streamRead(target1_output_section,
+       (float *)targetx+i*next_output_offset);
+    kernel_expand_to_float4(target1_output_section,target_output_section);
+      
+    kernel_compute_accuracy4( gnet->output_layer->neuron_output, // output
+                              gnet->target, // target
+			      target_accuracy_section,
+			      (float)accuracy_first_output,(float)accuracy_skip_offset,(float)0.);
+    valid_reduce_min_inverse4(target_accuracy_section,(float)1,(float)(no_accuracies),accuracy_current);
+    kernel4_add(accuracy_current,accuracysum,accuracysum);
+
+    } /* each iteration down the samples provided */
+  copy4(accuracysum,gnet->global_error);  
+  GNET_SPECIAL_TO_NET4(gnet,net1,net2,net3,net4);
+  net1->global_error = net1->global_error / ((float)iterations);
+  net2->global_error = net2->global_error / ((float)iterations);
+  net3->global_error = net3->global_error / ((float)iterations);
+  net4->global_error = net4->global_error / ((float)iterations);
+  GNET_LEARN_END_LAYER4;
+  GNET_LEARN_END_LAYER4;
+  GNET_LEARN_END_LAYER4;
+  GNET_END4;  
+    
+  } /* if number of layers are 3 */
+}

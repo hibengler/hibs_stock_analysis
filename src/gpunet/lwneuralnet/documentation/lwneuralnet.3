@@ -1,0 +1,378 @@
+.\" lwneuralnet.3 -- manual page for lightweight neural network
+.\" $Id$
+.TH LWNEURALNET 3 "29 July 2005" "Version 0.9" "Lightweight Neural Network"
+
+.SH NAME
+net_add_neurons,
+net_allocate,
+net_allocate_l,
+net_begin_batch,
+net_bload,
+net_bsave,
+net_compute,
+net_compute_output_error,
+net_copy,
+net_end_batch,
+net_fbprint,
+net_fbscan,
+net_fprint,
+net_free,
+net_fscan,
+net_get_learning_rate,
+net_get_momentum,
+net_get_no_of_inputs,
+net_get_no_of_layers,
+net_get_no_of_outputs,
+net_get_output_error,
+net_get_bias,
+net_get_weight,
+net_jolt, 
+net_load,
+net_overwrite,
+net_print,
+net_randomize,
+net_remove_neurons,
+net_reset_deltas,
+net_save,
+net_set_bias,
+net_set_momentum,
+net_set_learning_rate,
+net_spawn,
+net_train,
+net_train_batch,
+net_use_bias \- lightweight backpropagation neural network
+
+.SH SYNOPSIS
+.B #include <lwneuralnet.h>
+
+.BI "void net_add_neurons (network_t *" net ", int "
+.BI "" layer ", int " neuron ", int " number ", float " range ");"
+
+.BI "network_t *net_allocate (int " n ", int " i0 ", int " i1
+.BI ", ..., int " i(n-1) ");"
+
+.BI "network_t *net_allocate_l (int "n ", int *" list ");"
+
+.BI "void net_begin_batch (network_t *" net ");"
+
+.BI "network_t *net_bload (char *" filename ");"
+
+.BI "int net_bsave (const char *" filename ", const network_t *" net ")";
+
+.BI "void net_compute (network_t *" net ", const"
+.BI "float *" input ", float *" output ");"
+
+.BI "float net_compute_output_error(network_t *" net ", "
+.BI "const float *" target ");"
+
+.BI "network_t *net_copy (const network_t *" net ");"
+
+.BI "void net_end_batch (network_t *" net ");"
+
+.BI "int net_fbprint (FILE *" file ", const network_t *" net ")";
+
+.BI "network_t *net_fbscan (FILE *" file ");"
+
+.BI "int net_fprint (FILE *" file ", const network_t *" net ")";
+
+.BI "void net_free (network_t *" net ");"
+
+.BI "network_t *net_fscan (FILE *" file ");"
+
+.BI "float net_get_bias (const network_t *" net ", int " layer ", int " 
+.BI "" neuron ");"
+
+.BI "float net_get_learning_rate (const network_t *" net ");"
+
+.BI "float net_get_momentum (const network_t *" net ");"
+
+.BI "int net_get_no_of_inputs (const network_t *" net ");"
+
+.BI "int net_get_no_of_layers (const network_t *" net ");"
+
+.BI "int net_get_no_of_outputs (const network_t *" net ");"
+
+.BI "float net_get_output_error(network_t *" net ");"
+
+.BI "float net_get_weight (const network_t *" net ", int "
+.BI "" to_layer ", int " from_neuron ", int " to_neuron ");"
+
+.BI "void net_jolt (network_t *" net ", float " factor ","
+.BI "float " range ");"
+
+.BI "network_t *net_load (char *" filename ");"
+
+.BI "void net_overwrite (network_t *" dest ", const network_t *" src ");"
+
+.BI "void net_randomize (network_t *" net ", float " range ");"
+
+.BI "void net_remove_neurons (network_t *" net ", int " layer ","
+.BI "int " neuron ", int " number ");"
+
+.BI "void net_reset_deltas (network_t *" net ");"
+
+.BI "int net_print (FILE *" file ", const network_t *" net ")";
+
+.BI "int net_save (const char *" filename ", const network_t *" net ")";
+
+.BI "void net_set_bias (const network_t *" net ", int " layer ", int " 
+.BI "" neuron ", float " weight ");"
+
+.BI "void net_set_learning_rate (network_t *" net ", float " rate ");"
+
+.BI "void net_set_momentum (network_t *" net ", float " momentum ");"
+
+.BI "void net_set_weight (network_t *" net ", int "
+.BI "" to_layer ", int " from_neuron ", int " to_neuron
+.BI ", float " weight ");"
+
+.BI "network_t *net_spawn (const network_t *" net ", float " ratio_to_add ");"
+
+.BI "void net_train (network_t *" net ");"
+
+.BI "void net_train_batch (network_t *" net ");"
+
+.BI "void net_use_bias (network_t *" net ", int " flag ");"
+
+.SH DESCRIPTION
+
+.SS net_add_neurons
+Add neurons to layer 
+.I layer
+of the neural network. The input layer has number 0 and the output layer
+has number
+.RI "net_no_of_layers(" net ") - 1."
+The new neurons get inserted before the
+.RI "" neuron th
+neuron of this layer, where the neurons are numbered staring from 0.  As
+a special case, -1 can be specified to add the neurons after the last
+neuron of this layer. The new neurons will be connected to the other
+neurons with random weights from the interval
+.RI "[-" range ", " range "]." 
+
+.SS net_allocate
+Allocate resources for a neural network. The number of layers is 
+.RI "" n ,
+including the input and output layer,
+.I i0
+is the
+number of neurons in the input layer,
+.I i(n-1)
+is the number of neurons in the output
+layer and 
+.IR i2 ", ...," i(n-2)
+are the number of neurons in the hidden layers. Return value is a
+pointer to the newly allocated neural network.
+
+.SS net_allocate_l
+Allocate resources for a neural network. In contrast to net_allocate,
+this routine takes a pointer to an array containing the number
+of neurons in each layer. Return value is a pointer to the newly
+allocated neural network.
+
+.SS net_begin_batch
+Start a new batch for batch training.
+
+.SS net_bload
+Read a binary representation of a neural network from a file. The file is
+specified by
+.RI "" filename .
+This route will open the file before reading from it and will close it
+after reading from it. Resources for
+this network are allocated as with net_allocate and it is the
+caller's responsibility to free these resources with net_free when
+the network is no longer needed.
+Return value is a pointer to the newly allocated and read neural network
+on success and NULL on failure.
+
+.SS net_bsave
+Write a binary representation of the neural network to a file. The file
+is specified by
+.RI "" filename .
+This routine will open the file before writing to it and will
+close it after writing to it. Return value is 0 on success and a negative
+value on failure. Note that this is not necessarily portable across
+platforms.
+
+.SS net_compute
+Compute the outputs of the neural network for the given inputs. The outputs
+of the network will be copied to
+.RI "" output ,
+unless
+.I output
+is NULL.
+
+.SS net_compute_output_error
+Compute the output error of the neural network. This routine should be
+called after a call to net_compute. Return value is the global output error.
+
+.SS net_copy
+Copy a neural network. Resources for the copy are allocated as with
+net_allocate and it is the caller's responsibility to free these
+resources with net_free when the copy is no longer needed. Return value
+is a pointer to the copy.
+
+.SS net_end_batch
+End a batch for batch training. This will update the weights of the
+neural network.
+
+.SS net_fbprint
+Write a binary representation of the neural network to a file. Return value is
+0 on success and a negative number on failure. Note that this is not
+necessarily portable across platforms.
+
+.SS net_fbscan
+Read a binary representation of a neural network from a file. Resources for
+this network are allocated as with allocate_network and it is the
+caller's responsibility to free these resources with net_free when
+the network is no longer needed.
+Return value is a pointer to the newly allocated and read neural network
+on success and NULL on failure.
+
+.SS net_fprint
+Write a representation of the neural network to a file. Return value is
+0 on success and a negative number on failure.
+
+.SS net_free
+Free the resources allocated for the neural network.
+
+.SS net_fscan
+Read a representation of a neural network from a file. Resources for
+this network are allocated as with allocate_network and it is the
+caller's responsibility to free these resources with net_free when
+the network is no longer needed.
+Return value is a pointer to the newly allocated and read neural network
+on success and NULL on failure.
+
+.SS net_get_learning_rate
+Get the learning rate of the neural network.
+
+.SS net_get_momentum
+Get the momentum of the neural network.
+
+.SS net_get_no_of_inputs
+Get the number of inputs of the neural network.
+
+.SS net_get_no_of_layers
+Get the number of layers, including the input and output layer, of the
+neural network.
+
+.SS net_get_no_of_outputs
+Get the number of outputs of the neural network.
+
+.SS net_get_no_of_weights
+Get the total number of weights of the neural network.
+
+.SS net_get_output_error
+Get the output error of the neural network. The routine should be called
+after a call to net_compute_output_error.
+
+.SS net_get_weight
+Get the weight from neuron
+.I from_neuron
+in layer
+.RI "" to_layer "-1"
+to neuron
+.I to_neuron
+in layer
+.RI "" layer "." 
+Note that the layers and neurons are numbered starting from 0.
+
+.SS net_jolt
+Make small changes to the weight in the neural network. All weights that are
+in absolute value smaller than
+.I range 
+become a random weight from the interval
+.RI "[-" range ", " range "]." 
+All other weights get multiplied by a random factor from the interval
+.RI "[1-" factor ", 1+" factor "]." 
+
+.SS net_load
+Read a representation of a neural network from a file. The file is
+specified by
+.RI "" filename .
+This route will open the file before reading from it and will close it
+after reading from it. Resources for
+the network are allocated as with net_allocate and it is the
+caller's responsibility to free these resources with net_free when
+the network is no longer needed.
+Return value is a pointer to the newly allocated and read neural network
+on success and NULL on failure.
+
+.SS net_randomize
+Assign random weights to the nodes in the neural network. The weights
+are chosen from a uniform distribution over the interval
+.RI "[-" range ", " range "]."
+
+.SS net_reset_deltas
+Change all the deltas in the neural network to 0.
+
+.SS net_set_learning_rate
+Set the learning rate of the neural network.
+
+.SS net_set_momentum
+Set the momentum of the neural network.
+
+.SS net_set_weight
+Set the weight from neuron
+.I from_neuron
+in layer
+.RI "" to_layer "-1"
+to neuron
+.I to_neuron
+in layer
+.RI "" layer "to the value" weight "."
+Note that the layers and neurons are numbered starting from 0.
+
+.SS net_print
+Write a representation of the neural network to stdout. Return value is
+0 on success and a negative value on failure.
+
+.SS net_remove_neurons
+Remove the 
+.RI "" neuron "th to " (neuron "+" number "-1)th "
+neurons from layer 
+.I layer
+of the neural network. 
+
+.SS net_save
+Write a representation of the neural network to a file. The file
+is specified by
+.RI "" filename .
+This routine will open the file before writing to it and will
+close it after writing to it. Return value is 0 on success and a negative
+value on failure.
+
+.SS net_overwrite
+Overwrite one neural network with another neural network.
+
+
+.SS net_spawn
+Copy a neural network,  but grow the network by duplicating some nodes in the
+middle layers.
+The weights are adjusted properly so that the spawned child still has the same output.
+The reason for this spawn is akin to "reinforcement".
+the one parameter is the ratio of new nodes to make.  A ratio of 1 will double the number
+of middle nodes.  A ration of .5 will duplicate only 1 out of every 2 nodes.
+The Return value is a pointer to the spawned net.
+
+
+.SS net_train
+Train the neural network towards the target. This routine should be
+called after calls to net_compute and net_compute_output_error. Note that
+the target to which to train the network is set in the call to
+net_compute_output_error.
+
+.SS net_train_batch
+Compute the changes needed to train the network towards the target.
+This routine should be called after a call to net_begin_batch and
+after calls to net_compute and net_compute_output_error. Note that the
+target to which to train the network is set in the call to
+net_compute_output_error. The weights of the network will be updated
+when net_end_batch is called.
+
+.SS net_use_bias
+Enable or disable the usage of the bias neurons.
+
+.SH AUTHOR
+Peter van Rossum <petervr@users.sourceforge.net>.

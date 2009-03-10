@@ -1,0 +1,1036 @@
+/* fast.br -- the fast implementation of nnet
+Hibbard Engler Nov 2006
+
+
+This uses brookGPU to attempt to speed up the neural netowrk software.
+
+net_compute_output_error_fast 
+and
+net_compute_fast
+
+both work,  but they are not faster yet.  Hmmm.
+
+net_compute_fast_noback
+will compute faster because all levels are done in one swoop on the GPU.
+
+net_train_fast
+kinda works,  but the numbers coming back are a bit different.  I need to debug.
+
+*/
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+#include <math.h>
+
+#include "lwneuralnet.h"
+#include "lwneuralgpu.hpp"
+
+/* kernel functions */
+/* The kernel functions are used to perform basica calculations on the GPU.
+They are called with streams (basically arrays stored on the GPU),  and these
+streams are aligned to be equivilant (i.e if streem a is 1x5 and stream b is 
+  4x5 then stream a is expanded to look like a 4x5 with the same elements in all 4 
+elements.)
+
+Streams,  in theory,  do all their work on the GPU itself.  a good GPU program,
+from what I see,  has minimum transfers of stream data and maximum computations inside the 
+stream.
+
+
+streams are kinda generic,  so a kernel can be used for a 1d,  or a 2d stream.
+
+Reduction streams are used to bring an array down to size.
+*/
+
+
+kernel void kernel_mul( float a<>,float b<>, out float c<> ) {
+  c = a*b;
+}
+
+
+kernel void kernel_add( float a<>,float b<>, out float c<> ) {
+  c = a+b;
+}
+
+
+kernel void kernel_subtract( float a<>,float b<>, out float c<> ) {
+  c = a-b;
+}
+
+/* reduce is used to perform a vector x matrix */
+reduce void kernel_reduce(float x<>, reduce float result<>) {
+  result += x;
+}
+
+
+
+/* used to compute the global error */
+reduce void kernel_sum_square_over_2(float x<>, reduce float result) {
+  result += x* x  * 0.5f;
+}
+
+
+
+/* generic copy of data */
+kernel void copy (float a<>, out float b<>) {
+ b = a;
+ }
+
+
+
+
+
+
+kernel void kernel_transpose (float inx[][], out float result<>) {
+result=inx[indexof result.yx];
+
+}
+
+
+
+
+/* kernel functions for the activation and erro computation */
+
+kernel void kernel_identity( float a<>,out float c<> ) {
+  c = a;
+}
+
+kernel void kernel_d_identity( float a<>,out float c<> ) {
+  c = 1.0f;
+}
+
+
+
+
+kernel void kernel_sigma( float a<>,out float c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+kernel void kernel_d_sigma(float sigma_x<>,out float c<>)
+{
+  c = (1.0f - sigma_x) * sigma_x;
+}
+
+
+
+
+kernel void kernel_tanhp( float a<>,out float c<> ) {
+c = tanh(a);
+}
+
+kernel void kernel_d_tanhp (float a<>, out float c <>) {
+c = 1.0f - a * a;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* used to find the new delta to add to the errors -- including momentum */
+kernel void kernel_compute_delta (float learning_rate, float upper_error<>,
+                                   float output<>,
+                                   float momentum,
+                                   float delta<>,
+                                   out float newdelta<>) 
+{
+newdelta = learning_rate * upper_error * output + momentum * delta;
+}
+
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* same as net_compute_output-error but it uses the GPU
+   This will not be faster because it doesn't take that much work 
+   but if this function is combined with other functions,  then things
+   can work much better. */
+extern  float net_compute_output_error_fast(struct network_ts *net, const float *target)
+{
+  int n;
+  float output, error;
+  float (*d_act) (float);
+
+  /* the asserts are removed because they dont work within brook */
+
+  net->global_error = 0.0;
+  n = net->output_layer->no_of_neurons;
+  {
+        float outputs<n>;
+        float targets<n>;
+        float errors_temp<n>;
+        float derivitave<n>;
+        float global_error<1>;
+        
+        streamRead(targets,(float *)target);
+        streamRead(outputs,(float *)net->output_layer->neuron_output);
+        
+        kernel_subtract(targets,outputs,errors_temp);
+        
+  
+        switch (net->output_layer->activation) { 
+        case NET_ACT_LOGISTIC:
+        case NET_ACT_LOGISTIC_STEP:
+          kernel_d_sigma(outputs,derivitave);
+          break;
+        case NET_ACT_TANH:
+          kernel_d_tanhp(outputs,derivitave);
+          break;
+        case NET_ACT_IDENTITY:
+          kernel_d_identity(outputs,derivitave);
+          break;
+        default:
+          kernel_d_identity(outputs,derivitave);
+        }
+        
+        kernel_mul(derivitave,errors_temp,outputs); /* use output for the final value */
+        
+        kernel_sum_square_over_2(outputs,global_error);
+        
+        streamWrite(outputs,net->output_layer->neuron_error);
+        streamWrite(global_error,&net->global_error);
+  }
+  
+
+  return net->global_error;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*!\brief the same as net_compute excepting that the GPU is used
+ * 
+ */
+extern void net_compute_fast(struct network_ts *net, const float *inputx, float *output)
+{
+  
+  {
+  int n;
+
+  
+    for (n = 0; n < net->input_layer->no_of_neurons; n++) {
+      net->input_layer->neuron_output[n] = inputx[n];
+    }
+  }
+    
+  {
+  int l;
+  for (l = 1; l < net->no_of_layers; l++) {
+    struct layer_ts *lower;
+    struct layer_ts *upper;
+    int nu, nl;
+    int i;
+    float value;
+    float (*act) (float);
+   
+    lower = &net->layer[l-1];
+    upper = &net->layer[l];
+   
+    nu = upper->no_of_neurons;
+    nl = lower->no_of_neurons+1;
+    {
+      float weight<nu,nl>;
+      float input<1,nl>;
+      float tempmv<nu,nl>;
+      float activation<nu,1>;
+      float output<nu,1>;
+    
+      streamRead(weight,upper->upper_lower_weight);
+      streamRead(input,lower->neuron_output);
+
+    
+      kernel_mul(weight,input,tempmv);
+      kernel_reduce(tempmv,activation);
+    
+      
+      switch (upper->activation) { 
+        case NET_ACT_LOGISTIC:
+        case NET_ACT_LOGISTIC_STEP:
+          kernel_sigma(activation,output);
+          break;
+        case NET_ACT_TANH:
+          kernel_tanhp(activation,output);
+          break;
+        case NET_ACT_IDENTITY:
+          kernel_identity(activation,output);
+          break;
+        default:
+          kernel_identity(activation,output);
+      }
+        
+      streamWrite(output,upper->neuron_output);
+     }
+    
+
+    } /* for each layer */
+
+  if (output != NULL) {
+    
+      int n;
+
+  
+      for (n = 0; n < net->output_layer->no_of_neurons; n++) {
+        output[n] = net->output_layer->neuron_output[n];
+      }
+    } /* if no output */
+} /*a */
+}
+
+
+
+
+
+
+
+
+/* This is even faster -- as it reduced the communication tothe CPU's
+ * but it doesnt work yet.
+ */
+extern void net_compute_fast_nobackx(struct network_ts *net, const float *inputx, float *output)
+{
+if (net->no_of_layers == 4)
+  {
+  int i;
+  int n0,n0p1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  int n1,n1p1;
+  int n2,n2p1;
+  int n3;
+  n0 = net->layer[0].no_of_neurons;
+  n1 = net->layer[1].no_of_neurons;
+  n2 = net->layer[2].no_of_neurons;
+  n3 = net->layer[3].no_of_neurons;
+  n0p1=n0+1;n1p1=n1+1;n2p1=n2+1;
+  {
+    
+    float weight0 <n1,n0p1>;
+    float input0<1,n0p1>;
+
+    float tempmv0 <n1,n0p1>;
+    float activation0 <n1,1>;
+    float output0 <n1,1>;
+    
+    float input1 <1,n1p1>;
+    float weight1 <n2,n1p1>;
+    float tempmv1 <n2,n1p1>;
+    float activation1 <n2,1>;
+    float output1 <n2,1>;
+    
+    float input2 <1,n2p1>;
+    float weight2 <n3,n2p1>;
+    float tempmv2 <n3,n2p1>;
+    float activation2 <n3,1>;
+    int l;    
+    
+  
+    /* load the bias records */
+    streamRead(input0.domain(int2(n0,0), int2(n0p1,1)),net->layer[0].neuron_output+n0);
+    streamRead(input1.domain(int2(n1,0), int2(n1p1,1)),net->layer[1].neuron_output+n1);    
+    streamRead(input2.domain(int2(n2,0), int2(n2p1,1)),net->layer[2].neuron_output+n2);
+    
+    streamRead(weight0,net->layer[1].upper_lower_weight);
+    streamRead(weight1,net->layer[2].upper_lower_weight);
+    streamRead(weight2,net->layer[3].upper_lower_weight);
+    
+    /* copy everything except the bias record */
+    streamRead(input0.domain(int2(0,0), int2(n0,1)),(float *)inputx);
+
+    
+
+    kernel_mul(weight0,input0,tempmv0);
+    kernel_reduce(tempmv0,activation0);
+    kernel_sigma(activation0,output0);
+    kernel_transpose(output0,input1.domain(int2(0,0), int2(n1,1)));
+    
+        
+    kernel_mul(weight1,input1,tempmv1);
+    kernel_reduce(tempmv1,activation1);
+    kernel_sigma(activation1,output1);
+    kernel_transpose(output1,input2.domain(int2(0,0), int2(n2,1)));
+    
+        
+    kernel_mul(weight2,input2,tempmv2);
+    kernel_reduce(tempmv2,activation2);
+    
+    if (output != NULL) {
+      streamWrite(activation2,output);
+      }
+      
+    }
+    
+  } /* if numebr of layers are 4 */
+  
+}
+
+
+
+
+
+
+
+
+
+
+/*!\brief Train a network.
+ * \param net Pointer to a neural network.
+ *
+ * same as net_train 
+ *
+ * almost works
+ */
+void net_train_fast(struct network_ts *net)
+{
+  int l;
+
+  assert(net != NULL);
+
+  for (l = net->no_of_layers - 1; l >= 1; l--) { /* for each layer */
+    struct layer_ts *lower;
+    struct layer_ts *upper;
+    int nl, nu;
+    upper = net->layer + l;
+    lower = net->layer + l -1;
+
+    nu = upper->no_of_neurons;
+    nl = lower->no_of_neurons+1;
+    
+    
+    /* the followign GPU block does the backward pass and the adjust weights at the same time
+     */
+    
+    {
+      /* stream variables */
+      float weight<nu,nl>; 
+      float delta<nu,nl>;
+      float temp<nu,nl>;
+      float uppererror<nu,1>;
+      float errora<1,nl>;
+      
+      float error<1,nl>;
+      float outputs<1,nl>;
+      float derivitave<1,nl>;
+    
+    
+      streamRead(weight,upper->upper_lower_weight);
+      streamRead(delta,upper->upper_lower_delta);
+      streamRead(uppererror,upper->neuron_error);
+      streamRead(outputs,lower->neuron_output);
+
+      /* Compute the lower level errors */
+      if (l >1) { /* only for the upper levels,  don't need to know the error levels
+                      on the bottom -- although it might be interesting */
+        /* errora = sum(weight * uppererror) */              
+        kernel_mul(weight,uppererror,temp);
+        kernel_reduce(temp,errora);
+      
+   /*    {
+          float t[10000];              
+          int i;
+          printf("L %d lower errorw ",l);
+          streamWrite(errora,t);
+          for (i=0;i<nl&&i<8;i++) {
+            printf("%f ",t[i]);
+            }
+            printf("\n");
+          }
+     */   
+       
+        /* derivitave = dy/dx(output)  which varies based on the function */
+        switch (lower->activation) { 
+          case NET_ACT_LOGISTIC:
+          case NET_ACT_LOGISTIC_STEP:
+            kernel_d_sigma(outputs,derivitave);
+            break;
+          case NET_ACT_TANH:
+            kernel_d_tanhp(outputs,derivitave);
+            break;
+          case NET_ACT_IDENTITY:
+            kernel_d_identity(outputs,derivitave);
+            break;
+          default:
+            kernel_d_identity(outputs,derivitave);
+          }
+/*        {
+          float t[10000];              
+          int i;
+          printf("L %d lower derivitave ",l);
+          streamWrite(derivitave,t);
+          for (i=0;i<nl&&i<8;i++) {
+            printf("%f ",t[i]);
+            }
+          printf("\n");
+          }
+*/
+        /* errors = errora* derivitave */
+        kernel_mul(derivitave,errora,error);  
+   /*            {
+	          float t[10000];              
+	          int i;
+	          printf("L %d lower final error ",l);
+	          streamWrite(error,t);
+	          for (i=0;i<nl&&i<8;i++) {
+	            printf("%f ",t[i]);
+	            }
+	            printf("\n");
+	          }
+*/
+        } /* if we need to compute errors for the lower level */ 
+      
+      
+      /* then adjust the weights.
+         Note -  some theories have the weights adjusted first,  then the backward pass */
+      /* delta = lr * error * lower output + momentum * delta */
+      kernel_compute_delta(net->learning_rate,
+                             uppererror,outputs,net->momentum,delta,temp);
+                                     /* so temp has the new delta */
+                                     
+                                     
+      kernel_add(weight,temp,delta); /* convoluted. delta has the new weight */
+                                     /* you should be able to go add(weight,temp,weight)
+                                        but I am not sure of this so I reuse variables */
+     
+     
+     
+      if (l >1) { /* only for the upper levels,  don't need to know the error levels*/
+        streamWrite(error,lower->neuron_error);
+        }
+        
+      streamWrite(delta,upper->upper_lower_weight); /* bad names,  good reuse delta holds the
+                                                       new weights */
+      streamWrite(temp,upper->upper_lower_delta);   /* temp holds the new delta levels */
+        
+      } /* GPU block */
+  } /* for each layer */
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* kernel4 functions */
+
+
+kernel void kernel4_mul( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a*b;
+}
+
+
+kernel void kernel4_add( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a+b;
+}
+
+
+kernel void kernel4_subtract( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a-b;
+}
+
+/* reduce is used to perform a vector x matrix */
+reduce void kernel4_reduce(float4 x<>, reduce float4 result<>) {
+  result += x;
+}
+
+
+
+/* used to compute the global error */
+reduce void kernel4_sum_square_over_2(float4 x<>, reduce float4 result) {
+  result += x* x  * 0.5f;
+}
+
+
+
+/* generic copy of data */
+kernel void copy4 (float4 a<>, out float4 b<>) {
+ b = a;
+ }
+
+
+
+
+
+
+kernel void kernel4_transpose (float4 inx[][], out float4 result<>) {
+result=inx[indexof result.yx];
+
+}
+
+
+
+
+/* kernel functions for the activation and erro computation */
+
+kernel void kernel4_identity( float4 a<>,out float4 c<> ) {
+  c = a;
+}
+
+kernel void kernel4_d_identity( float4 a<>,out float4 c<> ) {
+  c = 1.0f;
+}
+
+
+
+
+kernel void kernel4_sigma( float4 a<>,out float4 c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+kernel void kernel4_d_sigma(float4 sigma_x<>,out float4 c<>)
+{
+  c = (1.0f - sigma_x) * sigma_x;
+}
+
+
+
+
+kernel void kernel4_tanhp( float4 a<>,out float4 c<> ) {
+c = tanh(a);
+}
+
+kernel void kernel4_d_tanhp (float4 a<>, out float4 c <>) {
+c = 1.0f - a * a;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* used to find the new delta to add to the errors -- including momentum */
+kernel void kernel4_compute_delta (float4 learning_rate, float4 upper_error<>,
+                                   float4 output<>,
+                                   float4 momentum,
+                                   float4 delta<>,
+                                   out float4 newdelta<>) 
+{
+newdelta = learning_rate * upper_error * output + momentum * delta;
+}
+
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+
+
+
+
+
+
+
+extern void net_load_gpu_input (
+struct gpu_network_ts *gnet,const float *inputx)
+{
+  int i;
+  int n0,n0p1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  n0 = gnet->input_layer->no_of_neurons;
+  {
+  
+  /* copy everything except the bias record */
+  streamRead(
+     gnet->input_layer->neuron_output.domain(int2(0,0), int2(n0,1)),
+     (float *)inputx);
+  }
+}
+
+
+
+/* This is even faster -- as it reduced the communication tothe CPU's
+ * but it doesnt work yet.
+ */
+extern void net_load_gpu_for_compute(
+  struct gpu_network_ts *gnet)
+{
+int l;
+for (l=0;l<gnet->no_of_layers;l++) {
+  struct gpu_layer_ts *layer;
+  struct network_ts *cpu_net;
+  int i;
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  
+  cpu_net = gnet->cpu_net;
+  layer = gnet->layer + l;
+  n = gnet->layer[l].no_of_neurons;
+  np1=n+1;
+  
+  /* load the bias records */
+  streamRead(layer->neuron_output.domain(int2(n,0), int2(np1,1)),
+             cpu_net->layer[l].neuron_output+n);
+  if (l>0) {
+    /* load the weight neurons */
+    streamRead((layer->upper_lower_weight),
+             cpu_net->layer[l].upper_lower_weight);
+    }
+  }    
+}
+
+
+
+
+
+
+
+void gpu_net_compute(struct gpu_network_ts *gnet)
+/* Hibbard Michael Engler Nov 2006 
+This computes the network forward propogation -- all within the GPU memory.
+This should be fast if we do many computations with the same net.
+It is called internally,  as we need to do funky things to allocate the 
+GPU memory for a neural net 
+*/
+{
+  int l;
+  for (l = 1; l < gnet->no_of_layers; l++) {
+    struct gpu_layer_ts *lower;
+    struct gpu_layer_ts *upper;
+    int nu, nl;
+    int i;
+    float value;
+    float (*act) (float);
+   
+    lower = &gnet->layer[l-1];
+    upper = &gnet->layer[l];
+   
+    nu = upper->no_of_neurons;
+    nl = lower->no_of_neurons+1;
+    
+    kernel_mul((upper->upper_lower_weight),(lower->neuron_output),
+                (upper->upper_lower_temp));
+    kernel_reduce((upper->upper_lower_temp),(upper->activation_transformed));
+    
+    switch (upper->activation) { 
+      case NET_ACT_LOGISTIC:
+      case NET_ACT_LOGISTIC_STEP:
+        kernel_sigma((upper->activation_transformed),(upper->output_transformed));
+        break;
+      case NET_ACT_TANH:
+        kernel_tanhp((upper->activation_transformed),(upper->output_transformed));
+        break;
+      case NET_ACT_IDENTITY:
+        kernel_identity((upper->activation_transformed),(upper->output_transformed));
+        break;
+      default:
+        kernel_identity((upper->activation_transformed),(upper->output_transformed));
+      }
+    kernel_transpose((upper->output_transformed),upper->neuron_output.domain(int2(0,0), int2(nu,1)));
+      /* the reason we domain this one is because of the BIAS number -- which is 1 and stored
+          one higher than the original value */
+   
+    } /* for each layer */
+} /* gpu_net_compute */
+
+/* This is what GNET_COMPUTE_INPUT_LAYER woudl expand to in brook:
+  layer=gnet->layer;  
+  n= layer->no_of_neurons;
+  np1=n+1;
+{
+    
+    float neuron_output<1,np1>;
+    
+    layer->neuron_output = neuron_output;
+    
+    nl=n;nlp1=np1;
+    layer++;
+    n= layer->no_of_neurons;
+    np1=n+1;
+
+But brook doesn't look at the preprocessor, and so it doesn't have a chance to expand
+the float neuron_output<1,np1> properly.
+So We expand GNET_COMPUTE_INPUT_LAYER to what brook would have expanded it to,  if brook knew:
+*/
+
+
+#define GNET_COMPUTE_INPUT_LAYER   layer=gnet->layer;  \
+  n= layer->no_of_neurons;\
+  np1=n+1;\
+{ ::brook::stream neuron_output(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+ layer->neuron_output= neuron_output 
+ 
+ 
+#define GNET_COMPUTE_LAYER  nl=n;nlp1=np1;\
+ layer++;\
+ n = layer->no_of_neurons;\
+ np1=n+1;\
+{\
+        ::brook::stream weight(::brook::getStreamType(( float  *)0), n , nlp1,-1);\
+        ::brook::stream tempmv(::brook::getStreamType(( float  *)0), n , nlp1,-1);\
+        ::brook::stream activation_transformed(::brook::getStreamType(( float  *)0), n , 1,-1);\
+        ::brook::stream output_transformed(::brook::getStreamType(( float  *)0), n , 1,-1);\
+        ::brook::stream neuron_output(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+        layer->activation_transformed = activation_transformed;\
+        layer->output_transformed = output_transformed;\
+        layer->neuron_output = neuron_output;\
+        layer->upper_lower_weight = weight;\
+        layer->upper_lower_temp = tempmv
+
+#define GNET_COMPUTE_END_LAYER }          
+          
+
+#define GNET_COMPUTE_FROM_NET(gnet,net) \
+{struct gpu_network_ts *gnet;\
+  struct gpu_layer_ts *layer;\
+  int i,l;\
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */\
+  int nl,nlp1;\
+  \
+  struct gpu_network_ts thenet;\
+  struct gpu_layer_ts layers[4];\
+  /* build the gnet version of the network */\
+  gnet = &thenet;\
+  gnet->no_of_layers = net->no_of_layers;\
+  gnet->layer = layers;\
+  gnet->cpu_net = net;\
+  gnet->no_of_patterns = net->no_of_patterns;\
+  gnet->momentum = net->momentum;\
+  gnet->learning_rate = net->learning_rate;\
+  gnet->global_error = net->global_error;\
+  gnet->input_layer = layers;\
+  gnet->output_layer = layers+3;\
+  \
+  for (l=0;l<gnet->no_of_layers;l++) {\
+    gnet->layer[l].no_of_neurons = net->layer[l].no_of_neurons;\
+    gnet->layer[l].no_of_neurons_plus_1 = net->layer[l].no_of_neurons+1;\
+    gnet->layer[l].activation = net->layer[l].activation;\
+    }
+
+
+#define GNET_COMPUTE_TO_NET(gnet,net) \
+net->no_of_patterns = gnet->no_of_patterns;\
+net->momentum = gnet->momentum;\
+net->learning_rate = gnet->learning_rate;\
+net->global_error = gnet->global_error;\
+for (l=0;l<gnet->no_of_layers;l++) {\
+    streamWrite(gnet->layer[l].neuron_output,net->layer[l].neuron_output);\
+    net->layer[l].activation = gnet->layer[l].activation;\
+    }
+
+
+#define GNET_END }
+    
+
+
+/* This is even faster -- as it reduced the communication tothe CPU's
+ * but it doesnt work yet.
+ */
+extern void net_compute_fast_noback(struct network_ts *net, const float *inputx, float *output)
+{
+ if (net->no_of_layers == 4)
+  {
+  GNET_COMPUTE_FROM_NET(gnet,net);
+  GNET_COMPUTE_INPUT_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+    
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute(gnet);
+  net_load_gpu_input (gnet,inputx);
+    
+  for (i=0;i<1000;i++) {
+  gpu_net_compute(gnet);
+    }
+  if (output != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    streamWrite(gnet->output_layer->neuron_output.domain(int2(0,0),int2(n,1)),output);
+    }
+  GNET_COMPUTE_TO_NET(gnet,net);
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_END;  
+    
+  } /* if numebr of layers are 4 */
+ else if (net->no_of_layers == 3)
+  {
+  GNET_COMPUTE_FROM_NET(gnet,net);
+  GNET_COMPUTE_INPUT_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+    
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute(gnet);
+  net_load_gpu_input (gnet,inputx);
+    
+    
+  gpu_net_compute(gnet);
+    
+  if (output != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    streamWrite(gnet->output_layer->neuron_output.domain(int2(0,0),int2(n,1)),output);
+    }
+  GNET_COMPUTE_TO_NET(gnet,net);
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_END;  
+    
+  } /* if numebr of layers are 3 */
+else net_compute(net,inputx,output);
+}
+
+
+
+
+
+void net_learn_cycle_fast(
+	struct network_ts *net, 
+	  const float *input, 
+	  const float *target,
+	  int iterations)
+{
+float output[1];
+int i;
+for (i=0;i<iterations;i++) {
+   net_compute_fast(net,input,output);
+   printf("output on iteration %d is %f\n",i,*output);
+   net_compute_output_error(net,target);
+   net_train_fast(net);
+  }
+}

@@ -1,0 +1,260 @@
+/* This test fails on 7800GS windows dx9.  succeeds 7800GS ogl and cpu */
+
+#define DOMINO(a,b,x1,y1,x2,y2) ::brook::stream a=b.domain(int2(y1,x1),int2(y2,x2))
+#define STREAM(a,x1,y1) ::brook::stream a(::brook::getStreamType((float4 *)0),x1,y1,-1)
+
+reduce void kernel_reduce(float x<>, reduce float result<>) {
+  result = result + x;
+}
+kernel void kernel_add_four (float a<>, float b <>, float c<>,float d<>,out float e<>) {
+e=a+b+c+d;
+}
+kernel void kernel_add_four4 (float4 a<>, float4 b <>, float4 c<>,float4 d<>,out float4 e<>) {
+e=a+b+c+d;
+}
+
+kernel void kernel_mul( float a<>,float b<>, out float c<> ) {
+  c = a*b;
+}
+
+kernel void kernel_zero(  out float c<> ) {
+  c = 0.f;
+}
+
+kernel void kernel_sigma( float a<>,out float c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+kernel void kernel4_sigma( float4 a<>,out float4 c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+/* generic copy of data */
+kernel void copy (float a<>, out float b<>) {
+ b = a;
+ }
+/* generic copy of data */
+kernel void copy4 (float4 a<>, out float4 b<>) {
+ b = a;
+ }
+void valid_reduce_sum(float a<>,int rmax,int csize,
+                   float b<>)
+/* this reduces destructively by hand.  We do this because there is a bug in reducing on dx9 
+First the bug:
+If you resuze something the size 47,  position 46 is double counted,  and position 44 is not counted.
+This ocurrs at many oddly shaped reductions firther on.
+
+Now this algorithm:
+We take the size of the array,  if it is bigger than 4,  we divide into 4 segments (with posible remainder left alone).
+Each of the 4 segments is added together and destructively stored in the 4th segment,  Then we loop again with
+trunc(the original size /4) + remainder as the new size.
+Drawback:  the remainders are not summed as evenly as the rest, so if we are dealing with a large matrix,  some resolution
+  might be lost:  1000000 + 0.25 = 1000000.  But since we are reducing by thouseands,not millions,  things should be ok.
+
+If the size is <4 then add them all together and place them into the output.
+
+Example:
+Size 47
+47/4 = 11
+
+add 0-11 11-22 22-33 33-44 into 33-44
+New size 33-47 = 14
+14/4 = 3
+add 33-36 36-39 39-42 42-45 into 42-45
+new size 42-47 = 5
+5/4= 1
+add 42-43 43-44 44-45 45-46 into 45-46
+new size 46-47 = 2
+
+Add 46 + 47 into result
+
+*/
+{
+int i;
+
+int rmin=0;
+int rsize = rmax - rmin;
+while (rsize >24) {
+  int offset = rsize>>2;
+  
+  
+  kernel_add_four(a.domain(int2(rmin,0),int2(rmin+offset,csize)),
+       a.domain(int2(rmin+offset,0),int2(rmin+offset+offset,csize)),
+        a.domain(int2(rmin+offset+offset,0),int2(rmin+offset*3,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)) );
+  
+  rmin = rmin + offset*3;
+  rsize = rmax - rmin;
+  
+    
+  }
+{
+float x<csize,rsize>;
+copy(a.domain(int2(rmin,0),int2(rmax,csize)),x);  
+kernel_reduce(x,b);
+}
+
+}
+
+
+kernel void kernel_transpose (float inx[][], out float result<>) {
+result=inx[indexof result.yx];
+
+}
+kernel void kernel4_zero(out float4 result<>) {
+result=0.f;
+}
+
+kernel void kernel4_mul( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a*b;
+}
+
+/* note - kernel reduce has a bug in it for weird sized shapes. */
+reduce void kernel4_reduce(float4 x<>, reduce float4 result<>) {
+  result = result + x;
+}
+
+
+
+
+void valid_reduce_sum4(float4 a<>,int rmax,int csize,
+                   float4 b<>)
+/* this reduces destructively by hand.  We do this because there is a bug in reducing on dx9 
+First the bug:
+If you resuze something the size 47,  position 46 is double counted,  and position 44 is not counted.
+This ocurrs at many oddly shaped reductions firther on.
+
+Now this algorithm:
+We take the size of the array,  if it is bigger than 4,  we divide into 4 segments (with posible remainder left alone).
+Each of the 4 segments is added together and destructively stored in the 4th segment,  Then we loop again with
+trunc(the original size /4) + remainder as the new size.
+Drawback:  the remainders are not summed as evenly as the rest, so if we are dealing with a large matrix,  some resolution
+  might be lost:  1000000 + 0.25 = 1000000.  But since we are reducing by thouseands,not millions,  things should be ok.
+
+If the size is <4 then add them all together and place them into the output.
+
+Example:
+Size 47
+47/4 = 11
+
+add 0-11 11-22 22-33 33-44 into 33-44
+New size 33-47 = 14
+14/4 = 3
+add 33-36 36-39 39-42 42-45 into 42-45
+new size 42-47 = 5
+5/4= 1
+add 42-43 43-44 44-45 45-46 into 45-46
+new size 46-47 = 2
+
+Add 46 + 47 into result
+
+*/
+{
+int i;
+int rmin=0;
+int rsize = rmax - rmin;
+while (rsize >24) {
+  int offset = rsize>>2;
+  
+  
+  kernel_add_four4(a.domain(int2(rmin,0),int2(rmin+offset,csize)),
+       a.domain(int2(rmin+offset,0),int2(rmin+offset+offset,csize)),
+        a.domain(int2(rmin+offset+offset,0),int2(rmin+offset*3,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)) );
+  
+  rmin = rmin + offset*3;
+  rsize = rmax - rmin;
+  
+    
+  }
+{
+float4 x<csize,rsize>;
+copy4(a.domain(int2(rmin,0),int2(rmax,csize)),x);  
+kernel4_reduce(x,b);
+}
+
+}
+
+
+
+kernel void mulc(float4 a,float4 b<>,out float4 c<>) {
+c=a*b;
+}
+
+kernel void kernel4_transpose (float4 inx[][], out float4 result<>) {
+result=inx[indexof result.yx];
+
+}
+
+
+main() {
+  float input[24]={.4f,.3f,.6f,.7f,.1f,.2f,
+.4f,.3f,.6f,.7f,.1f,.2f,
+.4f,.3f,.6f,.7f,.1f,.2f,
+.4f,.3f,.6f,.7f,.1f,.2f};
+  float output[8];
+  int i;
+  STREAM(ob0,1,7);
+  STREAM (x,1,1);  
+  STREAM(w1_0,2000,7);
+  STREAM(t1_0,2000,7);
+  STREAM(at1,2000,1);
+  STREAM(ot1,1,2000);
+  STREAM(ob1,1,2001);
+  
+  STREAM(w2_1,2000,2001);
+  STREAM(t2_1,2000,2001);
+  STREAM(at2,2000,1);
+  STREAM(ot2,1,2000);
+  STREAM(ob2,1,2001);
+
+  STREAM(w3_2,2,2001);
+  STREAM(t3_2,2,2001);
+  STREAM(at3,2,1);
+  STREAM(ot3,2,1);
+  STREAM(ob3,1,3);
+  DOMINO(o0,ob0,0,0,1,6);
+  DOMINO(o1,ob1,0,0,1,2000);
+  DOMINO(o2,ob2,0,0,1,2000);
+  DOMINO(o3,ob3,0,0,1,2);
+  kernel4_zero(w1_0);
+  kernel4_zero(w2_1);
+  kernel4_zero(w3_2);
+// measurements were done with 
+// valid_reduce_sum - 802	974
+// kernel_mul - 340		1126
+// kernel sigma -85		69
+// kernel transpose 75 		71
+// total       1000		2050
+// total is minus streamread and streamwrite 
+// streamread  			125
+// streamwrite			421
+// total with read and write - 2600
+// time is in hundreths of a second.
+// Sheit. we just use read and write and it will go fast enough!
+    streamRead(o1,input);
+if (1==0) {    
+    kernel4_mul(w1_0,ob0,t1_0);
+  valid_reduce_sum4(t1_0,7,2000,at1);
+  kernel4_sigma(at1,ot1);
+  kernel4_transpose(ot1,o1);
+  
+    kernel4_mul(w2_1,ob1,t2_1);
+  valid_reduce_sum4(t2_1,2001,2000,at2); // 30%
+  kernel4_sigma(at2,ot2);
+  kernel4_transpose(ot2,o2);
+  
+    kernel4_mul(w3_2,ob2,t3_2);
+  valid_reduce_sum4(t3_2,2001,2,at3);
+  kernel4_sigma(at3,ot3);
+  kernel4_transpose(ot3,o3);
+  }
+  for (i=0;i<2000;i++) {
+    float4 test<10,23>;
+    i=i+0;
+    }
+  streamWrite(o3,output);
+
+}

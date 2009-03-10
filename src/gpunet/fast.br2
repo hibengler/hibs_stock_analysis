@@ -1,0 +1,1204 @@
+/* fast.br -- the fast implementation of nnet
+Hibbard Engler Nov 2006
+
+
+This uses brookGPU to attempt to speed up the neural netowrk software.
+
+net_compute_output_error_fast 
+and
+net_compute_fast
+
+both work,  but they are not faster yet.  Hmmm.
+
+net_compute_fast_noback
+will compute faster because all levels are done in one swoop on the GPU.
+
+net_train_fast
+kinda works,  but the numbers coming back are a bit different.  I need to debug.
+
+*/
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+#include <math.h>
+
+
+#include "lwneuralnet.h"
+#include "lwneuralgpu.hpp"
+
+/* kernel functions */
+/* The kernel functions are used to perform basica calculations on the GPU.
+They are called with streams (basically arrays stored on the GPU),  and these
+streams are aligned to be equivilant (i.e if streem a is 1x5 and stream b is 
+  4x5 then stream a is expanded to look like a 4x5 with the same elements in all 4 
+elements.)
+
+Streams,  in theory,  do all their work on the GPU itself.  a good GPU program,
+from what I see,  has minimum transfers of stream data and maximum computations inside the 
+stream.
+
+
+streams are kinda generic,  so a kernel can be used for a 1d,  or a 2d stream.
+
+Reduction streams are used to bring an array down to size.
+*/
+
+
+kernel void kernel_mul( float a<>,float b<>, out float c<> ) {
+  c = a*b;
+}
+
+kernel void kernel_zero(  out float c<> ) {
+  c = 0.f;
+}
+
+kernel void kernel_add( float a<>,float b<>, out float c<> ) {
+  c = a+b;
+}
+kernel void kernel_add_three (float a<>, float b <>, float c<>,out float d<>) {
+d=a+b+c;
+}
+kernel void kernel_add_four (float a<>, float b <>, float c<>,float d<>,out float e<>) {
+e=a+b+c+d;
+}
+
+kernel void kernel_subtract( float a<>,float b<>, out float c<> ) {
+  c = a-b;
+}
+
+
+
+
+/* used to compute the global error */
+kernel void kernel_sum_square_over_2(float x<>, out float result<>) {
+  result = x* x  * 0.5f;
+}
+
+
+
+/* generic copy of data */
+kernel void copy (float a<>, out float b<>) {
+ b = a;
+ }
+
+
+void valid_reduce_sum(float a<>,int rmax,int csize,
+                   float b<>)
+/* this reduces destructively by hand.  We do this because there is a bug in reducing on dx9 
+First the bug:
+If you resuze something the size 47,  position 46 is double counted,  and position 44 is not counted.
+This ocurrs at many oddly shaped reductions firther on.
+
+Now this algorithm:
+We take the size of the array,  if it is bigger than 4,  we divide into 4 segments (with posible remainder left alone).
+Each of the 4 segments is added together and destructively stored in the 4th segment,  Then we loop again with
+trunc(the original size /4) + remainder as the new size.
+Drawback:  the remainders are not summed as evenly as the rest, so if we are dealing with a large matrix,  some resolution
+  might be lost:  1000000 + 0.25 = 1000000.  But since we are reducing by thouseands,not millions,  things should be ok.
+
+If the size is <4 then add them all together and place them into the output.
+
+Example:
+Size 47
+47/4 = 11
+
+add 0-11 11-22 22-33 33-44 into 33-44
+New size 33-47 = 14
+14/4 = 3
+add 33-36 36-39 39-42 42-45 into 42-45
+new size 42-47 = 5
+5/4= 1
+add 42-43 43-44 44-45 45-46 into 45-46
+new size 46-47 = 2
+
+Add 46 + 47 into result
+
+*/
+{
+int i;
+  float test[2100];
+int rmin=0;
+int rsize = rmax - rmin;
+while (rsize >4) {
+  int offset = rsize>>2;
+  
+  
+  kernel_add_four(a.domain(int2(rmin,0),int2(rmin+offset,csize)),
+       a.domain(int2(rmin+offset,0),int2(rmin+offset+offset,csize)),
+        a.domain(int2(rmin+offset+offset,0),int2(rmin+offset*3,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)) );
+  
+  rmin = rmin + offset*3;
+  rsize = rmax - rmin;
+  
+    
+  }
+  
+
+if (rsize ==4) {
+  kernel_add_four(a.domain(int2(rmin,0),int2(rmin+1,csize)),
+       a.domain(int2(rmin+1,0),int2(rmin+2,csize)),
+       a.domain(int2(rmin+2,0),int2(rmin+3,csize)),  
+       a.domain(int2(rmin+3,0),int2(rmin+4,csize)),
+  b);
+  }
+else if (rsize ==3)   {
+  kernel_add_three(a.domain(int2(rmin,0),int2(rmin+1,csize)),
+       a.domain(int2(rmin+1,0),int2(rmin+2,csize)),  
+       a.domain(int2(rmin+2,0),int2(rmin+3,csize)),b
+  );
+  }
+else if (rsize ==2) {
+  kernel_add(a.domain(int2(rmin,0),int2(rmin+1,csize)),
+       a.domain(int2(rmin+1,0),int2(rmin+2,csize)),
+  b);
+  }
+else {
+  copy(a.domain(int2(rmin,0),int2(rmin+1,csize)),b);
+  }
+
+
+}
+
+
+kernel void kernel_transpose (float inx[][], out float result<>) {
+result=inx[indexof result.yx];
+
+}
+
+
+
+/* this reduces in the inverse dimension */
+void valid_reduce_sum_inverse(float a<>,int cmax,int rsize,
+                   float b<>)
+{
+int i;
+  float test[2100];
+int cmin=0;
+int csize = cmax - cmin;
+while (csize >4) {
+  int offset = csize>>2;
+  kernel_add_four(a.domain(int2(0,cmin),int2(rsize,cmin+offset)),
+       a.domain(int2(0,cmin+offset),int2(rsize,cmin+offset+offset)),
+        a.domain(int2(0,cmin+offset+offset),int2(rsize,cmin+offset*3)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)),
+        a.domain(int2(0,cmin+offset*3),int2(rsize,cmin+offset*4)) );
+  
+  cmin = cmin + offset*3;
+  csize = cmax - cmin;
+  
+  }
+  
+
+if (csize ==4) {
+  kernel_add_four(a.domain(int2(0,cmin),int2(rsize,cmin+1)),
+       a.domain(int2(0,cmin+1),int2(rsize,cmin+2)),
+       a.domain(int2(0,cmin+2),int2(rsize,cmin+3)),  
+       a.domain(int2(0,cmin+3),int2(rsize,cmin+4)),
+  b);
+  }
+else if (csize ==3)   {
+  kernel_add_three(a.domain(int2(0,cmin),int2(rsize,cmin+1)),
+       a.domain(int2(0,cmin+1),int2(rsize,cmin+2)),
+       a.domain(int2(0,cmin+2),int2(rsize,cmin+3)),
+  b);
+  }
+else if (csize ==2) {
+  kernel_add(a.domain(int2(0,cmin),int2(rsize,cmin+1)),
+       a.domain(int2(0,cmin+1),int2(rsize,cmin+2)),
+  b);
+  }
+else {
+  copy(a.domain(int2(0,cmin),int2(rsize,cmin+1)),b);
+  }
+}
+
+
+
+
+
+
+
+/* kernel functions for the activation and erro computation */
+
+kernel void kernel_identity( float a<>,out float c<> ) {
+  c = a;
+}
+
+kernel void kernel_d_identity( float a<>,out float c<> ) {
+  c = 1.0f;
+}
+
+
+
+
+kernel void kernel_sigma( float a<>,out float c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+kernel void kernel_d_sigma(float sigma_x<>,out float c<>)
+{
+  c = (1.0f - sigma_x) * sigma_x;
+}
+
+
+
+
+kernel void kernel_tanhp( float a<>,out float c<> ) {
+c = tanh(a);
+}
+
+kernel void kernel_d_tanhp (float a<>, out float c <>) {
+c = 1.0f - a * a;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* used to find the new delta to add to the errors -- including momentum */
+kernel void kernel_compute_delta (float learning_rate, float upper_error<>,
+                                   float output<>,
+                                   float momentum,
+                                   float delta<>,
+                                   out float newdelta<>) 
+{
+newdelta = learning_rate * upper_error * output + momentum * delta;
+}
+
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* kernel4 functions */
+
+
+kernel void kernel4_mul( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a*b;
+}
+
+
+kernel void kernel4_add( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a+b;
+}
+
+
+kernel void kernel4_subtract( float4 a<>,float4 b<>, out float4 c<> ) {
+  c = a-b;
+}
+
+
+
+
+
+
+
+/* generic copy of data */
+kernel void copy4 (float4 a<>, out float4 b<>) {
+ b = a;
+ }
+
+
+
+
+
+
+kernel void kernel4_transpose (float4 inx[][], out float4 result<>) {
+result=inx[indexof result.yx];
+
+}
+
+
+
+
+/* kernel functions for the activation and erro computation */
+
+kernel void kernel4_identity( float4 a<>,out float4 c<> ) {
+  c = a;
+}
+
+kernel void kernel4_d_identity( float4 a<>,out float4 c<> ) {
+  c = 1.0f;
+}
+
+
+
+
+kernel void kernel4_sigma( float4 a<>,out float4 c<> ) {
+  c = 1.0f / (1.0f + exp(-a));
+}
+
+kernel void kernel4_d_sigma(float4 sigma_x<>,out float4 c<>)
+{
+  c = (1.0f - sigma_x) * sigma_x;
+}
+
+
+
+
+kernel void kernel4_tanhp( float4 a<>,out float4 c<> ) {
+c = tanh(a);
+}
+
+kernel void kernel4_d_tanhp (float4 a<>, out float4 c <>) {
+c = 1.0f - a * a;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* used to find the new delta to add to the errors -- including momentum */
+kernel void kernel4_compute_delta (float4 learning_rate, float4 upper_error<>,
+                                   float4 output<>,
+                                   float4 momentum,
+                                   float4 delta<>,
+                                   out float4 newdelta<>) 
+{
+newdelta = learning_rate * upper_error * output + momentum * delta;
+}
+
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+
+
+
+
+
+
+
+extern void net_load_gpu_input (
+struct gpu_network_ts *gnet,const float *inputx)
+{
+  int i;
+  int n0,n0p1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  n0 = gnet->input_layer->no_of_neurons;
+  {
+  
+  /* copy everything except the bias record */
+  streamRead(
+     gnet->input_layer->neuron_output,
+     (float *)inputx);
+  }
+}
+
+extern void net_load_gpu_target (
+struct gpu_network_ts *gnet,const float *targetx)
+{
+
+  streamRead(
+     gnet->target,
+     (float *)targetx);
+}
+
+
+extern void net_load_gpu_for_compute(
+  struct gpu_network_ts *gnet)
+{
+int l;
+for (l=0;l<gnet->no_of_layers;l++) {
+  struct gpu_layer_ts *layer;
+  struct network_ts *cpu_net;
+  int i;
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  
+  cpu_net = gnet->cpu_net;
+  layer = gnet->layer + l;
+  n = gnet->layer[l].no_of_neurons;
+  np1=n+1;
+  
+  /* load the bias records */
+  streamRead(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)),
+             cpu_net->layer[l].neuron_output+n);
+  if (l>0) {
+    /* load the weight neurons */
+    streamRead((layer->upper_lower_weight),
+             cpu_net->layer[l].upper_lower_weight);
+    }
+  }    
+}
+
+
+
+
+extern void net_load_gpu_for_train(
+  struct gpu_network_ts *gnet)
+{
+int l;
+
+net_load_gpu_for_compute(gnet);
+
+for (l=0;l<gnet->no_of_layers;l++) {
+  struct gpu_layer_ts *layer;
+  struct network_ts *cpu_net;
+  int i;
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */
+  
+  cpu_net = gnet->cpu_net;
+  layer = gnet->layer + l;
+  n = gnet->layer[l].no_of_neurons;
+  np1=n+1;
+  
+  /* load the bias records */
+  streamRead(layer->neuron_output_plus_bias.domain(int2(n,0), int2(np1,1)),
+             cpu_net->layer[l].neuron_output+n);
+  if (l>0) {
+    /* load the weight neurons */
+    streamRead((layer->upper_lower_delta),
+             cpu_net->layer[l].upper_lower_delta);
+    }
+  }    
+}
+
+
+
+
+void gpu_net_compute(struct gpu_network_ts *gnet)
+/* Hibbard Michael Engler Nov 2006 
+This computes the network forward propogation -- all within the GPU memory.
+This should be fast if we do many computations with the same net.
+It is called internally,  as we need to do funky things to allocate the 
+GPU memory for a neural net 
+*/
+{
+  int l;
+  for (l = 1; l < gnet->no_of_layers; l++) {
+    struct gpu_layer_ts *lower;
+    struct gpu_layer_ts *upper;
+    int nu, nl;
+    int i;
+    float value;
+    float (*act) (float);
+   
+    lower = &gnet->layer[l-1];
+    upper = &gnet->layer[l];
+   
+    nu = upper->no_of_neurons;
+    nl = lower->no_of_neurons+1;
+    
+    kernel_mul(upper->upper_lower_weight,lower->neuron_output_plus_bias,
+                upper->upper_lower_temp);
+
+    valid_reduce_sum((upper->upper_lower_temp),nl,nu,(upper->activation_transformed));
+    
+    
+    switch (upper->activation) { 
+      case NET_ACT_LOGISTIC:
+      case NET_ACT_LOGISTIC_STEP:
+        kernel_sigma(upper->activation_transformed,upper->output_transformed);
+        break;
+      case NET_ACT_TANH:
+        kernel_tanhp(upper->activation_transformed,upper->output_transformed);
+        break;
+      case NET_ACT_IDENTITY:
+        kernel_identity(upper->activation_transformed,upper->output_transformed);
+        break;
+      default:
+        kernel_identity(upper->activation_transformed,upper->output_transformed);
+      }
+    kernel_transpose(upper->output_transformed,
+              upper->neuron_output);
+   
+    } /* for each layer */
+} /* gpu_net_compute */
+
+/* This is what GNET_COMPUTE_INPUT_LAYER woudl expand to in brook:
+  layer=gnet->layer;  
+  n= layer->no_of_neurons;
+  np1=n+1;
+{
+    
+    float neuron_output_plus_bias<1,np1>;
+    
+    layer->neuron_output=neuron_output;
+    
+    nl=n;nlp1=np1;
+    layer++;
+    n= layer->no_of_neurons;
+    np1=n+1;
+
+But brook doesn't look at the preprocessor, and so it doesn't have a chance to expand
+the float neuron_output<1,np1> properly.
+So We expand GNET_COMPUTE_INPUT_LAYER to what brook would have expanded it to,  if brook knew:
+*/
+
+
+#define GNET_COMPUTE_INPUT_LAYER   layer=gnet->layer;  \
+  n= layer->no_of_neurons;\
+  np1=n+1;\
+{ ::brook::stream neuron_output_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+  ::brook::stream neuron_output=neuron_output_plus_bias.domain( int2(0,0),int2(n,1));\
+   layer->neuron_output= neuron_output;\
+   layer->neuron_output_plus_bias= neuron_output_plus_bias;
+ 
+ 
+#define GNET_COMPUTE_LAYER  nl=n;nlp1=np1;\
+ layer++;\
+ n = layer->no_of_neurons;\
+ np1=n+1;\
+{\
+        ::brook::stream weight(::brook::getStreamType(( float  *)0), n , nlp1,-1);\
+        ::brook::stream tempmv(::brook::getStreamType(( float  *)0), n , nlp1,-1);\
+        ::brook::stream activation_transformed(::brook::getStreamType(( float  *)0), n , 1,-1);\
+        ::brook::stream output_transformed(::brook::getStreamType(( float  *)0), n , 1,-1);\
+        ::brook::stream neuron_output_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+        ::brook::stream neuron_output=neuron_output_plus_bias.domain( int2(0,0),int2(n,1));\
+        layer->activation_transformed = activation_transformed;\
+        layer->output_transformed = output_transformed;\
+        layer->neuron_output= neuron_output;\
+        layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+        layer->upper_lower_weight = weight;\
+        layer->upper_lower_temp = tempmv
+
+#define GNET_COMPUTE_END_LAYER }   
+          
+
+#define GNET_COMPUTE_FROM_NET(gnet,net) \
+{struct gpu_network_ts *gnet;\
+  struct gpu_layer_ts *layer;\
+  int i,l;\
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */\
+  int nl,nlp1;\
+  \
+  struct gpu_network_ts thenet;\
+  struct gpu_layer_ts layers[4];\
+  /* build the gnet version of the network */\
+  gnet = &thenet;\
+  gnet->no_of_layers = net->no_of_layers;\
+  gnet->layer = layers;\
+  gnet->cpu_net = net;\
+  gnet->no_of_patterns = net->no_of_patterns;\
+  gnet->momentum = net->momentum;\
+  gnet->learning_rate = net->learning_rate;\
+  gnet->input_layer = layers;\
+  gnet->output_layer = layers+3;\
+  \
+  for (l=0;l<gnet->no_of_layers;l++) {\
+    gnet->layer[l].no_of_neurons = net->layer[l].no_of_neurons;\
+    gnet->layer[l].no_of_neurons_plus_1 = net->layer[l].no_of_neurons+1;\
+    gnet->layer[l].activation = net->layer[l].activation;\
+    }
+
+
+#define GNET_COMPUTE_TO_NET(gnet,net) \
+net->no_of_patterns = gnet->no_of_patterns;\
+net->momentum = gnet->momentum;\
+net->learning_rate = gnet->learning_rate;\
+for (l=0;l<gnet->no_of_layers;l++) {\
+    streamWrite(gnet->layer[l].neuron_output_plus_bias,net->layer[l].neuron_output);\
+    net->layer[l].activation = gnet->layer[l].activation;\
+    }
+
+
+#define GNET_END }
+    
+
+
+/* This is even faster -- as it reduced the communication tothe CPU's
+ * but it doesnt work yet.
+ */
+extern void net_compute_fast(struct network_ts *net, const float *inputx, float *output)
+{
+ if (net->no_of_layers == 4)
+  {
+  GNET_COMPUTE_FROM_NET(gnet,net);
+  GNET_COMPUTE_INPUT_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+    
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute(gnet);
+  net_load_gpu_input (gnet,inputx);
+    
+  for (i=0;i<1;i++) {
+   gpu_net_compute(gnet);
+   }
+
+  if (output != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    streamWrite(gnet->output_layer->neuron_output,output);
+    }
+  GNET_COMPUTE_TO_NET(gnet,net);
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_END;  
+    
+  } /* if numebr of layers are 4 */
+ else if (net->no_of_layers == 3)
+  {
+  GNET_COMPUTE_FROM_NET(gnet,net);
+  GNET_COMPUTE_INPUT_LAYER;
+  GNET_COMPUTE_LAYER;
+  GNET_COMPUTE_LAYER;
+    
+  
+  /* done allocating.  Now lets get the data in */
+  net_load_gpu_for_compute(gnet);
+  net_load_gpu_input (gnet,inputx);
+    
+    gpu_net_compute(gnet);
+    
+  if (output != NULL) {
+    int n=gnet->output_layer->no_of_neurons;
+    streamWrite(gnet->output_layer->neuron_output,output);
+    }
+  GNET_COMPUTE_TO_NET(gnet,net);
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_COMPUTE_END_LAYER;
+  GNET_END;  
+    
+  } /* if numebr of layers are 3 */
+else net_compute(net,inputx,output);
+}
+
+
+
+
+
+
+
+
+
+
+#define GNET_LEARN_INPUT_LAYER   layer=gnet->layer;  \
+  n= layer->no_of_neurons;\
+  np1=n+1;\
+{ ::brook::stream neuron_output_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+  ::brook::stream neuron_output=neuron_output_plus_bias.domain( int2(0,0),int2(n,1));\
+  ::brook::stream neuron_error_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+  ::brook::stream neuron_error=neuron_output_plus_bias.domain( int2(0,0),int2(n,1));\
+  layer->neuron_output= neuron_output;\
+  layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+  layer->neuron_error= neuron_error;\
+  layer->neuron_error_plus_bias = neuron_error_plus_bias;
+ 
+ 
+#define GNET_LEARN_LAYER  nl=n;nlp1=np1;\
+ layer++;\
+ n = layer->no_of_neurons;\
+ np1=n+1;\
+{\
+        ::brook::stream weight(::brook::getStreamType(( float  *)0), n , nlp1,-1);\
+        ::brook::stream delta(::brook::getStreamType(( float  *)0), n , nlp1,-1);\
+        ::brook::stream tempmv(::brook::getStreamType(( float  *)0), n , nlp1,-1);\
+        ::brook::stream activation_transformed(::brook::getStreamType(( float  *)0), n , 1,-1);\
+        ::brook::stream output_transformed(::brook::getStreamType(( float  *)0), n , 1,-1);\
+        ::brook::stream derivitave_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+        ::brook::stream error_temp_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+        ::brook::stream neuron_output_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+        ::brook::stream neuron_output=neuron_output_plus_bias.domain( int2(0,0),int2(n,1));\
+        ::brook::stream derivitave=derivitave_plus_bias.domain( int2(0,0),int2(n,1));\
+        ::brook::stream error_temp=error_temp_plus_bias.domain( int2(0,0),int2(n,1));\
+        ::brook::stream neuron_error_plus_bias(::brook::getStreamType(( float  *)0), 1 , np1,-1);\
+        ::brook::stream neuron_error=neuron_error_plus_bias.domain( int2(0,0),int2(n,1));\
+        layer->neuron_output= neuron_output;\
+        layer->derivitave= derivitave;\
+        layer->error_temp= error_temp;\
+        layer->activation_transformed = activation_transformed;\
+        layer->output_transformed = output_transformed;\
+        layer->derivitave_plus_bias= derivitave_plus_bias;\
+        layer->neuron_output_plus_bias = neuron_output_plus_bias;\
+	layer->error_temp_plus_bias = error_temp_plus_bias;\
+        layer->upper_lower_weight = weight;\
+        layer->upper_lower_delta = delta;\
+        layer->upper_lower_temp = tempmv;\
+        layer->neuron_error= neuron_error;\
+        layer->neuron_error_plus_bias = neuron_error_plus_bias;
+
+#define GNET_LEARN_END_LAYER }          
+          
+
+#define GNET_LEARN_FROM_NET(gnet,net) \
+{struct gpu_network_ts *gnet;\
+  struct gpu_layer_ts *layer;\
+  int i,l;\
+  int n,np1; /* number of neurons at level 0 is n0, n0p1 is n0 plus 1 for the bias */\
+  int nl,nlp1;\
+  \
+  struct gpu_network_ts thenet;\
+  struct gpu_layer_ts layers[4];\
+  ::brook::stream target_stream(::brook::getStreamType(( float  *)0), 1 , net->input_layer->no_of_neurons,-1);\
+  ::brook::stream global_error(::brook::getStreamType(( float  *)0), 1 , 1,-1);\
+  /* build the gnet version of the network */\
+  gnet = &thenet;\
+  gnet->no_of_layers = net->no_of_layers;\
+  gnet->layer = layers;\
+  gnet->cpu_net = net;\
+  gnet->no_of_patterns = net->no_of_patterns;\
+  gnet->momentum = net->momentum;\
+  gnet->learning_rate = net->learning_rate;\
+  gnet->input_layer = layers;\
+  gnet->output_layer = layers+3;\
+  \
+  for (l=0;l<gnet->no_of_layers;l++) {\
+    gnet->layer[l].no_of_neurons = net->layer[l].no_of_neurons;\
+    gnet->layer[l].no_of_neurons_plus_1 = net->layer[l].no_of_neurons+1;\
+    gnet->layer[l].activation = net->layer[l].activation;\
+    }\
+  gnet->global_error=global_error;\
+  gnet->target=target_stream;
+
+#define GNET_LEARN_TO_NET(gnet,net) \
+net->no_of_patterns = gnet->no_of_patterns;\
+net->momentum = gnet->momentum;\
+net->learning_rate = gnet->learning_rate;\
+streamWrite(gnet->global_error,&(net->global_error));\
+for (l=0;l<gnet->no_of_layers;l++) {\
+    streamWrite(gnet->layer[l].neuron_output,net->layer[l].neuron_output);\
+    if (l) {\
+      streamWrite(gnet->layer[l].upper_lower_weight,net->layer[l].upper_lower_weight);\
+      streamWrite(gnet->layer[l].upper_lower_delta,net->layer[l].upper_lower_delta);\
+      }\
+    net->layer[l].activation = gnet->layer[l].activation;\
+    }
+
+
+#define GNET_END }
+
+    
+	
+
+		
+		    
+void gpu_net_compute_output_error(struct gpu_network_ts *gnet) {
+struct gpu_layer_ts *upper=gnet->output_layer;
+int n=upper->no_of_neurons;
+kernel_subtract(gnet->target,upper->neuron_output,
+                         upper->error_temp);
+
+switch (gnet->output_layer->activation) { 
+        case NET_ACT_LOGISTIC:
+        case NET_ACT_LOGISTIC_STEP:
+          kernel_d_sigma(upper->neuron_output,upper->neuron_error);
+          break;
+        case NET_ACT_TANH:
+          kernel_d_tanhp(upper->neuron_output,upper->neuron_error);
+          break;
+        case NET_ACT_IDENTITY:
+          kernel_d_identity(upper->neuron_output,upper->neuron_error);
+	  break;
+        default:
+          kernel_d_identity(upper->neuron_output,upper->neuron_error);
+        }
+        
+kernel_mul( upper->neuron_error
+            ,upper->error_temp,
+	    upper->neuron_error);
+
+/* figure out the global error */        
+kernel_sum_square_over_2(upper->neuron_error,upper->error_temp);
+valid_reduce_sum_inverse(upper->error_temp,n,1,gnet->global_error);
+}
+
+
+
+
+
+void gpu_net_backprop_error(struct gpu_network_ts *gnet,int l) {
+/* Compute the lower level errors */
+if (l >1) { /* only for the upper levels,  don't need to know the error levels
+                      on the bottom -- although it might be interesting */
+        /* errora = sum(weight * uppererror) */              
+  struct gpu_layer_ts *upper = gnet->layer+l;
+  struct gpu_layer_ts *lower = gnet->layer+l-1;
+  int nl=lower->no_of_neurons; 
+  int nu=upper->no_of_neurons; 
+  /* we are sharing the activation_transformed record */
+  kernel_transpose(upper->neuron_error
+                  ,upper->activation_transformed);
+
+  kernel_mul(upper->upper_lower_weight,upper->activation_transformed,upper->upper_lower_temp);
+//  kernel_zero(lower->error_temp_plus_bias);
+  valid_reduce_sum_inverse(upper->upper_lower_temp,nu,nl+1,lower->error_temp_plus_bias);
+       
+  /* derivitave = dy/dx(output)  which varies based on the function */
+  switch (lower->activation) { 
+          case NET_ACT_LOGISTIC:
+          case NET_ACT_LOGISTIC_STEP:
+            kernel_d_sigma(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          case NET_ACT_TANH:
+            kernel_d_tanhp(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          case NET_ACT_IDENTITY:
+            kernel_d_identity(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+            break;
+          default:
+            kernel_d_identity(lower->neuron_output_plus_bias,
+	                   lower->neuron_error_plus_bias);
+          }
+
+        /* errors = errora* derivitave */
+        kernel_mul(lower->error_temp_plus_bias
+	  ,lower->neuron_error_plus_bias
+	     ,lower->neuron_error_plus_bias);  
+	     
+	     
+  } /* if we need to compute errors for the lower level */ 
+
+}			
+			    			    			    
+				
+
+
+
+
+void gpu_net_adjust_weights(struct gpu_network_ts *gnet,int l) {
+struct gpu_layer_ts *upper = gnet->layer+l;
+struct gpu_layer_ts *lower = gnet->layer+l-1;
+int n=upper->no_of_neurons;
+
+/* then adjust the weights.
+   Note -  some theories have the weights adjusted first,  then the backward pass */
+/* delta = lr * error * lower output + momentum * delta */
+if (l<=1) {
+  /* we are sharing the activation_transformed record */
+  kernel_transpose(upper->neuron_error,upper->activation_transformed);
+  }
+/* we are also using the output_transformed record :)*/
+
+kernel_compute_delta(gnet->learning_rate,
+                    upper->activation_transformed,
+		    lower->neuron_output_plus_bias,
+		    gnet->momentum,
+		    upper->upper_lower_delta,
+		    upper->upper_lower_delta);
+		    
+kernel_add(upper->upper_lower_weight,
+           upper->upper_lower_delta,
+	   upper->upper_lower_weight); 
+
+}			
+
+
+
+
+
+				    
+void gpu_net_learn(struct gpu_network_ts *gnet) 
+{					
+int l;
+gpu_net_compute(gnet);
+gpu_net_compute_output_error(gnet);
+for (l=gnet->no_of_layers-1;l>0;l--) {
+  if (l>1) gpu_net_backprop_error(gnet,l);
+  gpu_net_adjust_weights(gnet,l);
+  }
+}					   					    
+						
+
+
+void net_learn_cycle_fast(
+	struct network_ts *net, 
+	  const float *inputx, 
+	  const float *targetx,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int accuracy_first_output,
+	  int accuracy_skip_offset,
+	  int no_accuracies
+	  )
+{
+
+int u;
+struct gpu_packed_ts input_pack;
+struct gpu_packed_ts output_pack;
+total_input_size = net->input_layer->no_of_neurons;
+total_output_size = net->output_layer->no_of_neurons;
+
+chunk_input_size = (total_input_size+3)/4;
+chunk_output_size = (total_output_size+3)/4;
+chuck_input_last_floats = total_input_size % 4;
+if (chuck_input_last_floats==0) chuck_input_last_floats=4;
+chuck_output_last_floats = total_output_size % 4;
+if (chuck_output_last_floats==0) chuck_output_last_floats=4;
+
+
+bigin_cols = 2048;
+bigin_rows = (chunk_input_size + 2047) / 2048;
+bigin_last_cols = chunk_input_size % 2048;
+if (!bigin_last_cols) bigin_last_cols = 2048;
+
+bigtarget_cols = 2048;
+bigtarget_rows = (chunk_input_size + 2047) / 2048;
+bigtarget_last_cols = chunk_input_size % 2048;
+if (!bigtarget_last_cols) bigin_last_cols = 2048;
+
+/* there should be a check to see if target is inside input cuz if it is,  then we should combine the inputs together */
+bigtarget_offset=0;
+{
+  float4 big_input<biginput_cols,biginput_rows>;
+  float4 big_target<biginput_rows,biginput_cols>;
+  float4 temp;
+  float *ix;
+  
+  /* we load the input in three chunks
+   chunk 1 -  the full rows
+   chunk 2 -  the full column/rows on the last row.
+   chunk 3 -  the very last item.
+   
+   same with target
+   */
+ if (biginput_rows >1) {
+   streamRead(big_input.domain(int2(0,0),int2(biginput_rows-1,biginput_cols)),
+               (float4 *)(inputx));
+   }
+ if (bigin_last_cols >1) {
+   streamRead(big_input.domain(int2(biginput_rows-1,0),int2(biginput_rows,bigin_last_cols-1)),
+              (float4 *)(inputx + 4*((biginput_rows-1)*biginput_cols)));
+   }
+ temp = float4(0.f,0.f,0.f,0.f );
+ ix = inputx + 4*((biginput_rows-1)*biginput_cols + bigin_last_cols-1);
+ if (chuck_input_last_floats==4) temp = float4(ix[0],ix[1],ix[2],ix[3]);
+ else if (chuck_input_last_floats==3) temp = float4(ix[0],ix[1],ix[2],0.f);
+ else if (chuck_input_last_floats==2) temp = float4(ix[0],ix[1],0.f,0.f);
+ else temp = float4(ix[0],0.f,0.f,0.f);
+ streamRead(big_input.domain(int2(biginput_rows-1,bigin_last_cols-1),int2(biginput_rows,bigin_last_cols)),
+              &temp);
+
+ 
+ if (bigtarget_rows >1) {
+   streamRead(big_target.domain(int2(0,0),int2(bigtarget_rows-1,bigtarget_cols)),
+               (float4 *)(targetx));
+   }
+ if (bigtarget_last_cols >1) {
+   streamRead(big_target.domain(int2(bigtarget_rows-1,0),int2(bigtarget_rows,bigtarget_last_cols-1)),
+              (float4 *)(targetx + 4*((bigtarget_rows-1)*bigtarget_cols)));
+   }
+ temp = float4(0.f,0.f,0.f,0.f );
+ ix = targetx + 4*((bigtarget_rows-1)*bigtarget_cols + bigtarget_last_cols-1);
+ if (chuck_output_last_floats==4) temp = float4(ix[0],ix[1],ix[2],ix[3]);
+ else if (chuck_output_last_floats==3) temp = float4(ix[0],ix[1],ix[2],0.f);
+ else if (chuck_input_last_floats==2) temp = float4(ix[0],ix[1],0.f,0.f);
+ else temp = float4(ix[0],0.f,0.f,0.f);
+ streamRead(big_target.domain(int2(bigtarget_rows-1,bigtarget_last_cols-1),int2(bigtarget_rows,bigtarget_last_cols)),
+              &temp);
+ 
+ 
+ /* OK,  We now have loaded arrays of inputs and targets (minus accuracy target information since that is derived)
+  packed into two (and someday maybee one) honking big 2 dimensional arrays of float4's.  
+  And we are going to chunk this into the input and target sections appropriately.
+  And we are going to train this sucker 
+  over and over again
+  And later on we are going to train an array of these guys over and over
+  and then we have nirvana!
+  */
+  
+/* Now allocate the gnet and all the streams to be able to compute stuff */  
+
+ if (net->no_of_layers == 4)
+  {
+  GNET_LEARN_FROM_NET(gnet,net);
+  
+  GNET_LEARN_INPUT_LAYER;
+  GNET_LEARN_LAYER;
+  GNET_LEARN_LAYER;
+  GNET_LEARN_LAYER;
+
+  
+  /* done allocating.  Now lets get the data in */
+
+  net_load_gpu_for_train(gnet);
+  net_load_gpu_input (gnet,inputx);
+  net_load_gpu_target (gnet,targetx);
+  
+  for (i=0;i<iterations;i++) {
+    
+    gpu_net_learn(gnet);
+    }
+  }
+  GNET_LEARN_TO_NET(gnet,net);
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_LEARN_END_LAYER;
+  GNET_END;  
+    
+  } /* if numebr of layers are 4 */
+}
+
+
+
+void net_learn_cycle(
+	struct network_ts *net, 
+	  const float *input, 
+	  const float *target,
+	  int iterations,
+	  int next_input_offset,
+	  int next_output_offset,
+	  int accuracy_start,
+	  int accuracy_first_output,
+	  int accuracy_skip_offset,
+	  int no_accuracies
+	  )
+{
+int total_input_size;
+int total_output_size;
+float *run_input;
+float *run_target;
+float *run_output;
+int i;
+
+total_input_size = net->input_layer->no_of_neurons;
+total_output_size = net->output_layer->no_of_neurons;
+printf("size is %d to %d\n",total_input_size,total_output_size);
+run_input = (float *)malloc(sizeof(float)*total_input_size);
+run_target =(float *) malloc(sizeof(float)*total_output_size);
+run_output = (float *)malloc(sizeof(float)*total_output_size);
+
+for (i=0;i<iterations;i++) {
+   int j;
+   
+   /* copy the input */
+   memcpy((void *)run_input,(void *)(input+i*next_input_offset),sizeof(float)*total_input_size);
+   net_compute(net,run_input,run_output);
+   printf("output on iteration %d is %f\n",i,*run_output);
+   
+   /* copy the output */
+   memcpy((void *)run_target,(void *)(target+i*next_output_offset),sizeof(float)*accuracy_start);
+   
+   /* gather the accuracy data - if ther is any */
+   for (j=0;j<no_accuracies;j++) {
+     float this_output = run_output[j*accuracy_skip_offset + accuracy_first_output];
+     float this_target = run_target[j*accuracy_skip_offset + accuracy_first_output];
+     float this_error = fabsf(this_target - this_output);
+     run_target[j+accuracy_start] = this_error;
+     }
+   printf("cool\n");  
+   net_compute_output_error(net,run_target);
+   net_train(net);
+  }
+free(run_input);
+free(run_target);
+free(run_output);
+}

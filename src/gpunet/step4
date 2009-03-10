@@ -1,0 +1,1 @@
+./normalized_from_archive NATR_stocks.dat natr_training.flt <simple.csv

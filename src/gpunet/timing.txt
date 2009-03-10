@@ -1,0 +1,101 @@
+Dec 24 - Just fixed the reduction bug for DX9 code! yeah!
+An idea was given to me -- to change the reduce to use arrays(256) and reduce that.
+You could also do a transpose at the final step! And could call sigma as well!
+
+Also,  the kernel_mul could also do a reduction in itself -  
+Imagine 
+mul4 would take x1[a] + x2[a] + x3[a] + x4[a] - reducing the value down.
+
+
+
+Imagine a 1x4 * another 1x4  We could get (with a special matrix field or 4 special fields )
+result = a.xyzw * m1 + a.yzwx * m2 + a.zwxy * m3 + x.yzwx * m4
+1/4 the output means less work in reduction later.
+
+
+dec
+Dec 6
+Still need to speed up the io for fast4
+But
+tainer 01 is written - takes 16 (256) passws and cycles throught them with 4 epochs
+and then dumps the informtion over.  
+NATR is the test.
+The global error is really low for some,  but I really should instead write my own error counter
+and figure out what this thing can do with real data.
+
+The input data is so small that it might as well be input-randomized and expanded out.
+OR "compressed" first.
+8M 46 seconds - CPU
+1 minute 13 seconds - GPU
+But the GPU one crashes at the end. hmmm.
+It is still pretty damn cool!
+
+Dec 5
+Finist batch_compute_fast4 - 
+regular -5000uns on a 1000x1000 - 81 seconds
+fast - 5000 runs                  31 seconds   x2.5
+four  5000 runs                  30 seconds   x11
+With a 2000x2000 it would be better,  but this is dissapointing.
+Looks like the reduce is taking up all the time
+
+Dec 4 - made test2_1 and test2_4.br - single and 4 percision runs.
+// 2000 runs of the basic net_compute
+// measurements were done with 
+// valid_reduce_sum - 802	974
+// kernel_mul - 340		1126
+// kernel sigma -85		69
+// kernel transpose 75 		71
+// total       1000		2050
+// total is minus streamread and streamwrite 
+// streamread  			125
+// streamwrite			421
+// total with read and write - 2600
+// time is in hundreths of a second.
+// Sheit. we just use read and write and it will go fast enough!
+
+interesting.  I can probably get 70x with this?  at least 50x?
+
+
+
+Dec 3
+nvidia fast learn 5000 4,6,2000,2000,2 accuracy 1 	     56   = 37x! onNVIDIA!!!
+ati fast learn 5000 4,6,2000,2000,2 accuracy 1 	     56   =  same! huh?
+nvidia fast learn 500 4,6,2000,2000,2 accuracy 1 	     8s
+nvidia slow learn 500 4,6,2000,2000,2 accuracy 1		211s
+
+
+#ran out of space for the 4 bangers - went to 1000
+nvidia slow learn 500 4,6,1000,1000,2 accuracy 1	   52
+nvidia fast learn 5000 4,6,1000,1000,2 accuracy 1          55
+nvidia four learn 5000 4,6,1000,1000,2 accuracy 1          62s!
+
+So 4x is 33 times faster.
+1000x1000 is remarcably slower than 2000x2000. (i.e. the same amount of time)
+Which implies that the packing system sucks
+
+
+
+Prior -----
+6 2000 6000 2
+
+
+cpu 1000 42.7
+cpu 10000 402.7
+gpu4 1000 12.7
+gpu4 10000 103
+gpu 10000 41
+
+
+gpu4 is 16x faster
+gpu is 10x faster
+for large numbers - no thinking.
+
+1/2 that when we feed in data?
+
+
+42x gpu for learn
+68x gpu4 fpr learn?
+1/2 that when feed in data?
+
+
+

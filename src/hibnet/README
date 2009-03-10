@@ -1,0 +1,8 @@
+This directory contains the lwneuralnet library itself. Type 'make'
+to compile the library.
+
+To use the library, #include "lwneuralnet.h" in your C/C++ application
+and link with liblwneuralnet.a. The source code of the library is mainly
+in network.c. The file generate_sigma.c is used to generate an
+interpolation table for the sigmoidal function. The file it generates,
+interpolation.c, is #included in network.c.

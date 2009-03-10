@@ -1,0 +1,30 @@
+This directory contains a few utilities and test programs for
+the lwneuralnet library. Type 'make' to compile them.
+
+copy_network
+  Copies a network file. It is much easier just to use 'cp';
+  this program only exists to test the net_copy() function.
+
+create_network
+  Create a neural network. The number of neurons in each
+  layer can be specified on the command line.
+
+jolt_network
+  Make small modifications to the weights of a neural network,
+  using net_jolt.
+
+show_network
+  Given a .spec file (see below) and a network file, compute
+  the network for all inputs in the .spec file and show
+  the outputs together with the targets.
+
+train_network
+  Train a network to compute the specification in a .spec
+  file (see below).
+
+Furthermore, this directory contains a few .spec files. Such a 
+file specifies input/target pairs for a neural network. They
+are only intended for testing and demonstration purposes. In
+a real application, the actual input/target pairs will generally
+be generated from some database. See, for instance, the ocr
+example application.

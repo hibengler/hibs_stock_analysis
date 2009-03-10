@@ -1,0 +1,13 @@
+BROOKDIR = ../../../brook
+BRCCFLAGS = 
+
+EXECUTABLE = t1
+FILES = t1 fast
+LIBRARIES = $(RUNTIME_LIBS)
+
+include $(BROOKDIR)/common.mk
+
+ROOTDIR = .
+
+CFLAGS += /W1 
+

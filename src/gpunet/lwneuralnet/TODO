@@ -1,0 +1,26 @@
+The following is a list of planned improvements to lwneuralnet. 
+
+ * Graphical user interface for OCR application.
+   - CVS contains a first idea.
+ * Python/Perl interface.
+   - Needs(?) dynamic library.
+ * Incorporate code by Luca Cinti for (super scaling) adaptive 
+   backpropgation.
+   - Needs documentation and code clean-up.
+ * Batch training seems to converge too slowly.
+   - Try 'ocr_train -c -n32 -b1 \
+          ocr_data/optdigits.training.gz ocr_data/optdigits.training.gz'
+     (batch training - updating weights at the end of every loop over
+     the whole training set; since a batch is the whole training set
+     and the validation set is equal to the training set, we're now
+     really using steepest-decent-method to find a (local) minimum
+     of the error surface).
+     and 'ocr_train -c -n32 \
+          ocr_data/optdigits.training.gz ocr_data/optdigits.training.gz'
+     (randomly choosing pairs from the training set - updating weights
+     after every pair)
+     and 'ocr_train -c -n32 -b-1 \
+          ocr_data/optdigits.training.gz ocr_data/optdigits.training.gz'
+     (this is undocumented - consider all pairs from the training
+     set - updating weights after every pair).
+   - Maybe the learning_rate has to be chosen in a more subtle way.

@@ -1,0 +1,19 @@
+Lightweight Neural Network (lwneuralnet), Version 0.9
+
+This is a lightweight implementation of a neural network in C.  It
+provides a multilayer perceptron network with backpropagation training.
+It is small, fast, easy to embed in an application and easy to extend.
+
+Lwneuralnet doesn't do anything fancy: no millions of different types of
+neural networks, no graphical user interface, just the routines for 
+computing and training a backpropagation neural network. It is 
+primarily intended for use in applications that just happen to need a 
+simple neural network and have no use for complicated neural network 
+libraries.
+
+Included with lwneuralnet is an example application that trains a neural
+network to recognize handwritten digits.
+
+New in this release is support for different activation functions per layer;
+provided activation functions are x -> 1 + 1 / (1 + e^-x), x -> tanh(x),
+x -> x. In some cases this speeds up training considerably.

@@ -1,0 +1,89 @@
+/* This test fails on 7800GS windows dx9.  succeeds 7800GS ogl and cpu */
+
+reduce void kernel_reduce_sum(float x<>, reduce float result<>) {
+  result += x;
+}
+
+
+kernel void kernel_add (float a<>, float b <>, out float c<>) {
+c=a+b;
+}
+
+kernel void kernel_add_three (float a<>, float b <>, float c<>,out float d<>) {
+d=a+b+c;
+}
+kernel void kernel_add_four (float a<>, float b <>, float c<>,float d<>,out float e<>) {
+e=a+b+c+d;
+}
+
+kernel void copy (float a<>,out float b<>) {
+b=a;
+}
+
+
+void valid_reduce_sum(float a<>,int rmax,int csize,
+                   float b<>)
+{
+int i;
+  float test[2100];
+int rmin=0;
+int rsize = rmax - rmin;
+while (rsize >4) {
+  int offset = rsize>>2;
+  kernel_add_four(a.domain(int2(rmin,0),int2(rmin+offset,csize)),
+       a.domain(int2(rmin+offset,0),int2(rmin+offset+offset,csize)),
+        a.domain(int2(rmin+offset+offset,0),int2(rmin+offset*3,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)),
+        a.domain(int2(rmin+offset*3,0),int2(rmin+offset*4,csize)) );
+  
+  rmin = rmin + offset*3;
+  rsize = rmax - rmin;
+  
+  }
+  
+
+if (rsize ==4) {
+  kernel_add_four(a.domain(int2(rmin,0),int2(rmin+1,csize)),
+       a.domain(int2(rmin+1,0),int2(rmin+2,csize)),
+       a.domain(int2(rmin+2,0),int2(rmin+3,csize)),  
+       a.domain(int2(rmin+3,0),int2(rmin+4,csize)),
+  b);
+  }
+else if (rsize ==3)   {
+  kernel_add_three(a.domain(int2(rmin,0),int2(rmin+1,csize)),
+       a.domain(int2(rmin+1,0),int2(rmin+2,csize)),
+       a.domain(int2(rmin+2,0),int2(rmin+3,csize)),  
+  b);
+  }
+else if (rsize ==2) {
+  kernel_add(a.domain(int2(rmin,0),int2(rmin+1,csize)),
+       a.domain(int2(rmin+1,0),int2(rmin+2,csize)),
+  b);
+  }
+else {
+  copy(a.domain(int2(rmin,0),int2(rmin+1,csize)),b);
+  }
+}
+
+
+main() {
+  float *bigmat;
+  float mat<1,2001>;
+  float t1;
+  float total1<1,1>;
+
+  bigmat=(float *)calloc(sizeof(float),2001);
+  bigmat[46]=1000000.; 
+  streamRead(mat,bigmat);
+  valid_reduce_sum(mat,2001,1,total1);
+  streamWrite(total1,&t1);
+  if (t1 != 1000000.) printf("Oh no! %f should be 1000000.\n",t1);
+
+  bigmat[46]=0.;  
+  bigmat[44]=1000000.;
+  streamRead(mat,bigmat);
+  valid_reduce_sum(mat,2001,1,total1);
+  streamWrite(total1,&t1);
+  if (t1 != 1000000.) printf("Oh no again! %f should be 1000000.\n",t1);  
+
+}

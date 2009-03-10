@@ -1,0 +1,7 @@
+ROOTDIR = ../../../brook
+EXECUTABLE = t1
+FILES = t1 network
+LIBRARIES = $(RUNTIME_LIBS)
+
+include $(ROOTDIR)/common.mk
+
