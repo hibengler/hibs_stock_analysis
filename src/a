@@ -1,0 +1,12 @@
+double  str_to_date(char *x) {
+/* number of seconds since jan 1, 1970 */
+struct tm datime;
+time_t time2;
+if (!strptime(x,"%Y-%m-%d %H:%M:%S",&datime)) {
+  fprintf(stderr,"error stripping time\n");
+  }
+time2 = mktime(&datime);
+
+return((double)(time2));
+}
+

@@ -1,0 +1,107 @@
+NNL approach
+
+Input
+current date
+current time
+t+1
+t+2
+t+3
+...t_16
+t+18
+...
+t+32
+1 week worth of data - 16 inputs daily * 2 weeks + 8 imputs daily * 4 weeks + 1 input daily 
+
+20 + 224 + 224 + 30
+include volume -- later.
+Include QQQ and all the other ones
+
+For now, no daily.
+
+Output
+
+current date
+day of week
+current time
+for each stock
+t+1
+confidence_1
+t+2
+confidence_2
+t+4
+confidence_4
+t+8
+confidence_8
+t+1 day
+confidence+1 day
+t+2 day
+confidence+2 day
+t+3 day
+confidence+3 day
+t+4 day
+confidence+4 day
+t+5 day
+confidence+5 day
+t+10 day
+confidence+10 day
+t+15 day
+confidence+15 day
+
+
+smaller test for now because we only have 9 months of data
+Make inputs 500 * number of guys
+
+Make outputs more forward.
+
+
+--------------------------------------------------------
+
+x = exp(ln(x))
+exp(x) = e to the x
+
+pow(x,y) = x to the y
+which is e to the y * ln (x)
+440 to 1760
+
+it is 440 * 2 1/12 from 0 to 24
+
+
+a
+b
+300 steps
+a * (b/a) ^ i(1/3000) from 0 to 3000
+
+so it should be 2 1/3000 * 2
+
+increment from 0 to 1 is 
+a (b/a) ^ i(1/3000) - a
+
+
+= a (b/a ^ 1/3000 -1)
+
+ some number f, g
+ 
+ a * b/a ^ f(1/3000) = a
+  b/a ^ f(1/3000) = 1
+  
+  e ^ F(1/3000) * log(b/a) = 1
+  e ^ F(1/3000) = 1/log(b/a)
+  
+   F/3000 = log(1/log(b/a))
+  if e r = a
+   does r = log a
+          e log a
+
+   F/3000 = log(1) - log(b/a)
+      
+ log(u/log(i))
+
+e ^ log(3000) + log(1)
+ 
+log (e ^ log u - log(i))
+= log(u) - log(i)
+  
+  
+where a * f
+
+2 *1/12

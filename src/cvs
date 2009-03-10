@@ -1,0 +1,8 @@
+cvs -d:pserver:anonymous@lwneuralnet.cvs.sourceforge.net:/cvsroot/lwneuralnet login
+ 
+cvs -z3 -d:pserver:anonymous@lwneuralnet.cvs.sourceforge.net:/cvsroot/lwneuralnet co -P modulename
+
+
+ export CVS_RSH=ssh
+  
+  cvs -z3 -d:ext:developername@lwneuralnet.cvs.sourceforge.net:/cvsroot/lwneuralnet co -P modulename

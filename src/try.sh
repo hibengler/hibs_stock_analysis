@@ -1,0 +1,252 @@
+{
+echo "output 1
+learning_rate .001"
+cat natr.trn
+echo "output 1
+"
+echo "output 1
+learning_rate .20"
+cat natr.trn
+echo "output 1
+learning_rate .15"
+cat natr.trn
+echo "output 1
+learning_rate .10"
+cat natr.trn
+echo "output 1
+"
+echo "output 1
+learning_rate .07"
+cat natr.trn
+echo "output 1
+learning_rate .05"
+cat natr.trn
+echo "output 1
+learning_rate .02"
+cat natr.trn
+echo "output 1
+learning_rate .01"
+cat natr.trn
+echo "output 1
+learning_rate .10"
+cat natr.trn
+echo "output 1
+learning_rate .10"
+cat natr.trn
+echo "output 1
+learning_rate .10"
+cat natr.trn
+echo "output 1
+learning_rate .10"
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+echo "output 1
+"
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+echo "output 0"
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+echo "output 1"
+cat natr.trn
+echo "output 0
+learning_rate .10"
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+cat natr.trn
+} | ./ai NATR_stocks.dat 1  natr1.net natr1.net
+

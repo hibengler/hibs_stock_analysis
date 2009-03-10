@@ -1,0 +1,2 @@
+ln -s ../simple.csv .
+nohup >$1.log 2>&1 step3 $1 
