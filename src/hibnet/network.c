@@ -373,7 +373,7 @@ int net_get_no_of_weights(const network_t *net)
 
 /*!\brief Set a weight of a network.
  * \param net Pointer to a neural network.
- * \param l Number of lower layer.
+ * \param l Number of UPPER layer.
  * \param nl Number of neuron in the lower layer.
  * \param nu Number of neuron in the next layer.
  * \param weight Floating point number.
@@ -385,15 +385,15 @@ void net_set_weight(network_t *net, int l, int nl, int nu, float weight)
 {
   assert(net != NULL);
   assert(0 <= l && l < net->no_of_layers);
-  assert(0 <= nl && nl <= net->layer[l].no_of_neurons);
-  assert(0 <= nu && nu < net->layer[l + 1].no_of_neurons);
+  assert(0 <= nl && nl <= net->layer[l -1 ].no_of_neurons);
+  assert(0 <= nu && nu < net->layer[l].no_of_neurons);
 
   net->layer[l].neuron[nu].weight[nl] = weight;
 }
 
 /*!\brief Retrieve a weight of a network.
  * \param net Pointer to a neural network.
- * \param l Number of lower layer.
+ * \param l Number of upper.
  * \param nl Number of neuron in the lower layer.
  * \param nu Number of neuron in the next layer.
  * \return Weight connecting the neuron numbered nl in the layer
@@ -403,8 +403,8 @@ float net_get_weight(const network_t *net, int l, int nl, int nu)
 {
   assert(net != NULL);
   assert(0 <= l && l < net->no_of_layers - 1);
-  assert(0 <= nl && nl <= net->layer[l].no_of_neurons);
-  assert(0 <= nu && nu < net->layer[l + 1].no_of_neurons);
+  assert(0 <= nl && nl <= net->layer[l - 1].no_of_neurons);
+  assert(0 <= nu && nu < net->layer[l ].no_of_neurons);
 
   return net->layer[l].neuron[nu].weight[nl];
 }
@@ -447,7 +447,7 @@ void net_set_bias(network_t *net, int l, int nu, float weight)
   assert(0 < l && l < net->no_of_layers);
   assert(0 <= nu && nu < net->layer[l].no_of_neurons);
 
-  net_set_weight(net, l - 1, net->layer[l - 1].no_of_neurons, nu, weight);
+  net_set_weight(net, l , net->layer[l - 1].no_of_neurons, nu, weight);
 }
 
 /****************************************

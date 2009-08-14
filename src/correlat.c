@@ -156,9 +156,9 @@ while (fgets(line2,19999,pf) != NULL) {
     if (x=strtok(NULL,",")) dl.currentPrice = atof(x); else continue;
     dl.dateInSeconds = str_to_date(dl.quotedate); 
 
-/*    fprintf(stderr,"\\%s,%s,%s,%s	%f %lf\n",
+    fprintf(stderr,"\\%s,%s,%s,%s	%f %lf\n",
     dl.name,dl.symbol,dl.quotedate,x,dl.currentPrice,dl.dateInSeconds);
-  */   
+     
         
     /* ok now lets convert this to a point */
       

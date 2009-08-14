@@ -1,3 +1,33 @@
+The status - it is a mess. I cnnot get correlat to run - it returns bad valuess for the numebr of seconds after a  while.
+
+But I have a new idea- listen for the raindrops as they make waves,  but where in the pond do the raindrops lie?
+use corr.dat as input - and make a predefined neural network - 2 layers deep.
+Each layer has the same weights, thereby making this a non perceptron thingie.
+The error rate is back propogated through twice which should error out the non causation items.
+OR it might be a mess
+see creator2.c for the beginning of this code.
+
+
+correlat - broken
+creator2 - reads companied.dat and corr.dat and produces the.net
+archive_to_ticker.c - generates the input to feed the beast - not working yet.
+
+
+so 1. run correlat - which doesn't work.
+2. use awk and sort -u to get a list of all correlated companies into companies.dat
+3. run creator2
+4. run archive_to_ticker to prepare the training data
+5. train the fuck out of it.
+
+creator2 places random the correlations which will make the initial 
+machine super sensitive.  So training should be pretty rough in the beginning.
+I can see it pegging to all 1 or all -1 pretty easily.
+Perhaps the randomness shouldd include either direction - Iduknow.
+
+
+--------------------------------------------------
+
+
 Shit.  It doesn't work for shit.
 And i needed totake a break.
 I got the fast GPU thing working -- effectively 10x faster with a normal input-- but it seems to do real badly with thousands of inputs.
