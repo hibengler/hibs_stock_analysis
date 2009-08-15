@@ -1,5 +1,9 @@
-/* creator
+/* creator2
 This creates 1 neural nets based on the correlation
+It currently creates a hidden layer with the same size as the input and output layer.
+And the wiring is the same - minus some randomization.
+It might be good to increase the number of hidden layer nodes by a factor of 2 and then wire it up that way
+
 argv[1]
 
 */
@@ -151,10 +155,10 @@ while (read_companies(roster));
         if (strcmp(companies[pos2],comp2)==0) break;
         pos2++;
 	}
-      net_set_weight(net,1,pos1,pos2,factor * rand01());
-      net_set_weight(net,2,pos1,pos2,factor * rand01());
-      net_set_weight(net,1,pos2,pos1,factor * rand01());
-      net_set_weight(net,2,pos2,pos1,factor * rand01());
+      net_set_weight(net,1,pos1,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos2,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2,pos1,factor * (rand01()-0.5));
       
       }
     fclose(xf);  

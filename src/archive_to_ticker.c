@@ -34,11 +34,7 @@ each line - one row of data- floats included
 char *companies[10000];
 int number_companies = 0;
 
-
-	
-	
-
-
+/* read the list of companies */
 int read_companies(FILE *pf) {
 char line[20000];
 
@@ -115,8 +111,8 @@ double dividendYieldValue;
 int process_data_limit(char *filename,struct company **pcompanies, int *pnumber_companies) 
 
 {
-struct company *companies; /* stores the companies -- before we assign it to *pcompanies */
-int number_companies; /* holds the number of companies - before we assign it to *pnumber_Companies */
+struct company *full_companies; /* stores the companies -- before we assign it to *pcompanies */
+int number_full_companies; /* holds the number of companies - before we assign it to *pnumber_Companies */
 int i;
 FILE *pf;
 char line[20000];
@@ -129,13 +125,13 @@ hash_init();
 putenv("TZ=EST5EDT");
 last_symbol[0]='\0';
 
-number_companies = 4000; /* guess */
-companies = (struct company *)malloc(sizeof(struct company)*number_companies);
+number_full_companies = 4000; /* guess */
+full_companies = (struct company *)malloc(sizeof(struct company)*number_full_companies);
 
 /* open the nnl_test.txt  to get the list of companies that we will look at */
 pf = fopen(filename,"r");
 if (!pf) exit(-1);
-number_companies = 0;
+number_full_companies = 0;
 while (fgets(line,19999,pf) != NULL) {
   int position;
   struct company *c;
@@ -145,9 +141,9 @@ while (fgets(line,19999,pf) != NULL) {
   if(line[strlen(line)-1] <= ' ') line[strlen(line)-1]='\0';
   
   if ((position=hash_find(line))==-1) { /* if we cant find the ticker */
-      hash_set(line,number_companies);
-      position=number_companies;
-      c = companies + position;
+      hash_set(line,number_full_companies);
+      position=number_full_companies;
+      c = full_companies + position;
       strcpy(c->symbol,line);
       if (last_symbol[0] == '\0') {
         strcpy(last_symbol,line);
@@ -162,7 +158,7 @@ while (fgets(line,19999,pf) != NULL) {
       c->r = NULL;
       c->t = 0;
       c->timepoint = NULL;
-      number_companies++;
+      number_full_companies++;
     } /* if we are not duplicated*/
   }
 fclose(pf);
@@ -201,7 +197,7 @@ while (fgets(line,19999,pf) != NULL) {
       continue; /* then ignore it */
       }
     else {
-      c = companies + position;
+      c = full_companies + position;
       }
 
     c->point[(c->number_points+c->start)&4095] = dl.currentPrice;
@@ -212,7 +208,7 @@ while (fgets(line,19999,pf) != NULL) {
     
     
     if (strcmp(dl.symbol,last_symbol)==0) { /* if it is time to do processing */
-        send_run(dl.dateInSeconds,number_companies,companies);
+        send_run(dl.dateInSeconds,number_full_companies,full_companies);
 	}
 	
     
@@ -222,24 +218,25 @@ while (fgets(line,19999,pf) != NULL) {
   } /* while reading lines */
 
 
-*pcompanies = companies;
-*pnumber_companies = number_companies;
+*pcompanies = full_companies;
+*pnumber_companies = number_full_companies;
 }
 
 FILE *outfile;
 
 
 
-int send_run1(char *action,double date,int offset,int number_companies,struct company *companies) {
+int send_run1(char *action,double date,int offset,int number_full_companies,struct company *full_companies) {
 int i;
+int h;
 double real_date;
 real_date=date;
-for (i=0;i<number_companies;i++) {
+for (i=0;i<number_full_companies;i++) {
   struct company *c;
   int j;
-  c=companies+i;
+  c=full_companies+i;
   j = position_at_time(c,date);
-  if (j==-1) return(-1); /* error if cant find time */
+  if (j==-1) continue; /* error if cant find time */
   if (offset &&(i==0)) { /* figure out the REAL date */
     j = j + offset;
     j = j & 4095;
@@ -248,34 +245,36 @@ for (i=0;i<number_companies;i++) {
   }
 
 
-
-for (i=0;i<number_companies;i++) {
-  struct company *c;
-  int pos;
-  int j;
-  c=companies+i;
-  pos = position_at_time(c,date);
-  {
-    double point;
-    double volume;
-    float data[2];
-    j=0;
-    point = c->point[(run_offsets[j]+pos+offset)&4095]/1024.; /* 0 and 1024 max normalized */
-    volume = log(c->volume[(run_offsets[j]+pos+offset)&4095]+1.0)/64.; /* normalize this between 0 and 1 as well */
-    data[0]=point;
-    data[1]=volume;
-    fwrite((void *)data,sizeof(float),2,outfile);
+for (h=0;h<number_companies;h++) {
+  for (i=0;i<number_full_companies;i++) {
+    struct company *c;
+    int pos;
+    int j;
+    c=full_companies+i;
+    if (strcmp(companies[h],c->symbol)==0) {
+      double point;
+      double volume;
+      float data[2];
+      pos = position_at_time(c,date);
+      j=0;
+      point = c->point[(run_offsets[j]+pos+offset)&4095]; 
+      volume = log(c->volume[(run_offsets[j]+pos+offset)&4095]+1.0)/64.; /* normalize this between 0 and 1 as well */
+      data[0]=point;
+      data[1]=volume; /* obsolete */
+//      fprintf(stderr,"%f ",(float)point);
+      fwrite((void *)data,sizeof(float),1,outfile);
+      }
     }
- 
   }
+//fprintf(stderr,"\n");
 return(0);
 }
 
 
 
-int send_run(double date,int number_companies,struct company *companies) {
+int send_run(double date,int number_full_companies,struct company *full_companies) {
 int i;
-i = send_run1("run",date,0,number_companies,companies);
+i = send_run1("run",date,0,number_full_companies,full_companies);
 }
 
 
@@ -382,17 +381,17 @@ return(k2);
 
 
 
-double derive_current_time_in_seconds(struct company *companies, 
-int number_companies) 
+double derive_current_time_in_seconds(struct company *full_companies, 
+int number_full_companies) 
 {
 int i;
 double current_time_seconds;
 current_time_seconds= 0.;
-for (i=0;i<number_companies;i++)
+for (i=0;i<number_full_companies;i++)
   {                         
   double currenttime;     
   struct company *x;
-  x = companies+i;
+  x = full_companies+i;
   if (x->number_points) {
   	currenttime = x->seconds[(x->start+x->number_points-1)&4095];
   	if (current_time_seconds < currenttime) 
@@ -437,8 +436,8 @@ main(int argc,char *argv[]) {
 int i,j,k,l;
 int flag;
 network_t *net;
-       int number_companies;
-struct company *companies;        
+       int number_full_companies;
+struct company *full_companies;        
 FILE *roster;
 
 roster=fopen("companies.dat","r");
@@ -446,9 +445,10 @@ number_companies=0;
 while (read_companies(roster));
 
 
-outfile=fopen(argv[2],"wb");
+//outfile=fopen("data.flt","wb");
+outfile=stdout;
 fprintf(stderr,"read...\n");
-process_data_limit(argv[1],&companies,&number_companies);
+process_data_limit("companies.dat",&full_companies,&number_full_companies);
 fprintf(stderr,"done reading...\n");
 fclose(outfile);
 

@@ -11,6 +11,8 @@ see creator2.c for the beginning of this code.
 correlat - broken
 creator2 - reads companied.dat and corr.dat and produces the.net
 archive_to_ticker.c - generates the input to feed the beast - not working yet.
+normalize - convert absolute values to delta values - log
+train - read normalize and train "the.net" neural network to be accurate. Works very well.
 
 
 so 1. run correlat - which doesn't work.
@@ -23,6 +25,14 @@ creator2 places random the correlations which will make the initial
 machine super sensitive.  So training should be pretty rough in the beginning.
 I can see it pegging to all 1 or all -1 pretty easily.
 Perhaps the randomness shouldd include either direction - Iduknow.
+
+
+
+
+nasdaq listed:
+http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt
+wget http://www.nasdaqtrader.com/dynamic/SymDir/stocka.html
+
 
 
 --------------------------------------------------

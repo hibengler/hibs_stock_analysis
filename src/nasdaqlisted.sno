@@ -1,0 +1,16 @@
+	alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+	
+	line = span(alpha) . symbol '|' 
+	
+	
+loop	x = input	:f(endd)
+	&anchor = 1
+	x line	:f(loop)
+	output = symbol
+	:(loop)
+
+
+
+
+endd	
+end

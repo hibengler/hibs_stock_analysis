@@ -1,4 +1,5 @@
 /* 
+OBSOLETE
 Based on ticker_From_archive.c -- but this normalizes the data itno a stream of floats - 
 first number - number of tickers
 each line - one row of data- floats included

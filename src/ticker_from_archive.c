@@ -1,4 +1,5 @@
 /* 
+OBSOLETE
 This builds an NNL stram from stock items in the file.
 argv[1] is the list of companies
 

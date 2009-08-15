@@ -1,0 +1,16 @@
+	all_but_angle = &alphabet
+	all_but_angle '>' = ''
+	alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+	
+	line = '<a href=' span(all_but_angle) '>' span(alpha) . symbol '<'
+
+
+loop	x = input	:f(endd)
+	x line	:f(loop)
+	output = symbol
+	:(loop)
+	
+	
+endd
+
+end
