@@ -5,8 +5,14 @@ Inputs:
 Outputs:
 	the.net
 
+V1.6 - back to V1.1
 
+V1.5 reduce the hidden layer to 2 instead of 5
 
+V1.4 More like 1.1 - variable dependant on friends only
+
+V1.3 - learning weas slower.  Made a mistake of linking pos1 to pos1, pos2 to pos2. Will try it without this
+error - so that the variable is dependant on its friends only.
 
 
 V1.2 The training learning rate was cut by 1 fifth,  but the training was not nearly as good as the first one.  Now we have
@@ -136,7 +142,7 @@ while (read_companies(roster));
   number_input = number_companies;
   number_output = number_companies;
 
-  number_base = number_companies*5;/* 5 variables per output */
+  number_base = number_companies;/* 2 variables per output */
   number_spots = number_base;
 
 
@@ -189,37 +195,12 @@ while (read_companies(roster));
         if (strcmp(companies[pos2],comp2)==0) break;
         pos2++;
 	}
-      /* no overlap.  5 variables per output */
-      net_set_weight(net,1,pos1,pos2*5,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos1,pos2*5+1,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos1,pos2*5+2,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos1,pos2*5+3,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos1,pos2*5+4,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+1,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+2,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+3,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+4,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+1,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+2,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+3,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2*5+4,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos2,pos1*5,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos2,pos1*5+1,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos2,pos1*5+2,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos2,pos1*5+3,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos2,pos1*5+4,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+1,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+2,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+3,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+4,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+1,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+2,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+3,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1*5+4,pos2,factor * (rand01()-0.5));
+	
+     net_set_weight(net,1,pos1,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos2,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2,pos1,factor * (rand01()-0.5));
+
       
       }
     fclose(xf);  

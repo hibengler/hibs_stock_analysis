@@ -19,6 +19,7 @@ so 1. run correlat - which doesn't work.
 2. use awk and sort -u to get a list of all correlated companies into companies.dat
 3. run creator2
 4. run ./archive_to_ticker <simple.csv | ./normalize | ./train
+4. ./archive_to_ticker <simple.csv | ./normalize | ./compute_error_rate
 5. ./archive_to_ticker <data/test1.csv | ./normalize | ./try
 5. train the fuck out of it.
 
@@ -34,6 +35,11 @@ nasdaq listed:
 http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt
 wget http://www.nasdaqtrader.com/dynamic/SymDir/stocka.html
 
+Well, I started gollecting stocks on /u/stocks/data on ernie, which is nice.
+But the creator - besides becomming very accurate on the sample data, does 
+crappy on real data (Q1, Q2 2004).
+I could have it look back at a few earlier stock points,  but for me,  this
+is a dead project, for a while.
 
 
 --------------------------------------------------

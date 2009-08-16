@@ -11,10 +11,10 @@ install:
 	cp $(LIST) *.exe ../bin
 
 #CFLAGS = -O3 -march=pentium4m 
-CFLAGS = -O3 
+#CFLAGS = -O3 
 
 #CFLAGS = -O3 -march=prescott
-#CFLAGS = -g
+CFLAGS = -g
 LDFLAGS = -lm
 
 correlat_bihourly: correlat_bihourly.c gen.o hash.o
