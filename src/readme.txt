@@ -18,7 +18,8 @@ train - read normalize and train "the.net" neural network to be accurate. Works 
 so 1. run correlat - which doesn't work.
 2. use awk and sort -u to get a list of all correlated companies into companies.dat
 3. run creator2
-4. run archive_to_ticker to prepare the training data
+4. run ./archive_to_ticker <simple.csv | ./normalize | ./train
+5. ./archive_to_ticker <data/test1.csv | ./normalize | ./try
 5. train the fuck out of it.
 
 creator2 places random the correlations which will make the initial 

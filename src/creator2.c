@@ -1,4 +1,32 @@
 /* creator2
+Inputs:
+	companies.dat
+	corr.dat
+Outputs:
+	the.net
+
+V1.2
+
+
+V1.2 - Trying a new approach - 5 variables for each output, no crossover. I might try it with crossover later.
+
+a             b               c
+
+
+a1 a2 a3 a4 a5 b1 b2 b3 b4 b5 c1 c2 c3 c4 c5
+
+a b c 
+
+This way each output will be trained independently.  This could be done more efficiently as a set of smaller networks.
+But the advantage of a big network is that we can do crossover.
+Crossover - makes the numbers more interdependant, but could cause the overtraining.
+
+
+V1.1 - original matrix - with a middle layer equal to the input and output layer.
+weights were just to the known correlations.
+The thing trained to a low error in about 14 passes of 3 months of data, but did poorly on the next day, showing that it was overtrained.
+
+
 This creates 1 neural nets based on the correlation
 It currently creates a hidden layer with the same size as the input and output layer.
 And the wiring is the same - minus some randomization.
@@ -102,7 +130,7 @@ while (read_companies(roster));
   number_input = number_companies;
   number_output = number_companies;
 
-  number_base = number_companies;/* ups to 1712 which is close to our limit */
+  number_base = number_companies*5;/* 5 variables per output */
   number_spots = number_base;
 
 
@@ -155,10 +183,27 @@ while (read_companies(roster));
         if (strcmp(companies[pos2],comp2)==0) break;
         pos2++;
 	}
-      net_set_weight(net,1,pos1,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos1,pos2,factor * (rand01()-0.5));
-      net_set_weight(net,1,pos2,pos1,factor * (rand01()-0.5));
-      net_set_weight(net,2,pos2,pos1,factor * (rand01()-0.5));
+      /* no overlap.  5 variables per output */
+      net_set_weight(net,1,pos1,pos2*5,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos1,pos2*5+1,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos1,pos2*5+2,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos1,pos2*5+3,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos1,pos2*5+4,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+1,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+2,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+3,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+4,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos2,pos1*5,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos2,pos1*5+1,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos2,pos1*5+2,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos2,pos1*5+3,factor * (rand01()-0.5));
+      net_set_weight(net,1,pos2,pos1*5+4,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+1,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+2,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+3,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+4,pos1,factor * (rand01()-0.5));
       
       }
     fclose(xf);  
