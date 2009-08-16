@@ -1,0 +1,12 @@
+export HOME=/home/hib
+export LOGNAME=hib
+export MAIL=/var/mail/hib
+export ORACLE_HOME=/u/oracle/oracle/product/10.2.0/ernie
+export ORACLE_SID=ernie
+export PATH=/u/stocks:/home/hib/bin:/usr/local/bin:/usr/bin:/bin:/usr/bin/X11:/usr/games:/u/oracle/oracle/product/10.2.0/ernie/bin
+export PWD=/u/stocks
+export SHELL=/bin/bash
+export SHLVL=3
+export TERM=xterm
+export USER=hib
+cd /u/stocks

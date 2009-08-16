@@ -1,3 +1,6 @@
+#!/bin/bash
+. /u/stocks/environment
+cd data
 {
 
 wget http://www.nasdaqtrader.com/dynamic/SymDir/nasdaqlisted.txt 2>/dev/null &
@@ -31,6 +34,6 @@ wget http://www.quotelinks.com/nyse/stockz.html 2>/dev/null &
 wait
 }
 {
-snobol4 -b nasdaqlisted.sno <nasdaqlisted.txt
-cat stock[a-z].html | snobol4 -b stock_nyse.sno 
+snobol4 -b ../nasdaqlisted.sno <nasdaqlisted.txt
+cat stock[a-z].html | snobol4 -b ../stock_nyse.sno 
 } | sort -u >all_companies.dat
