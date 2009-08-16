@@ -5,7 +5,13 @@ Inputs:
 Outputs:
 	the.net
 
-V1.2
+
+
+
+
+V1.2 The training learning rate was cut by 1 fifth,  but the training was not nearly as good as the first one.  Now we have
+error rates for specific stocks, which is nice,   but when taken to old data, it is not as good.  When taken to newer data, it is also not as good.
+So we are going to try the crossover.
 
 
 V1.2 - Trying a new approach - 5 variables for each output, no crossover. I might try it with crossover later.
@@ -194,6 +200,11 @@ while (read_companies(roster));
       net_set_weight(net,2,pos2*5+2,pos2,factor * (rand01()-0.5));
       net_set_weight(net,2,pos2*5+3,pos2,factor * (rand01()-0.5));
       net_set_weight(net,2,pos2*5+4,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+1,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+2,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+3,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos2*5+4,pos1,factor * (rand01()-0.5));
       net_set_weight(net,1,pos2,pos1*5,factor * (rand01()-0.5));
       net_set_weight(net,1,pos2,pos1*5+1,factor * (rand01()-0.5));
       net_set_weight(net,1,pos2,pos1*5+2,factor * (rand01()-0.5));
@@ -204,6 +215,11 @@ while (read_companies(roster));
       net_set_weight(net,2,pos1*5+2,pos1,factor * (rand01()-0.5));
       net_set_weight(net,2,pos1*5+3,pos1,factor * (rand01()-0.5));
       net_set_weight(net,2,pos1*5+4,pos1,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+1,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+2,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+3,pos2,factor * (rand01()-0.5));
+      net_set_weight(net,2,pos1*5+4,pos2,factor * (rand01()-0.5));
       
       }
     fclose(xf);  

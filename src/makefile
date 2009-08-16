@@ -2,7 +2,8 @@
 
 LIST=simplify correlat creator correlat_bihourly make_money nnl nntest adamize \
 ticker_from_archive normalized_from_archive ai \
-step1 step2 step3_launch step3 creator2 archive_to_ticker normalize train try
+step1 step2 step3_launch step3 creator2 archive_to_ticker normalize train try \
+compute_error_rate
 
 all: $(LIST)
 
@@ -41,6 +42,8 @@ normalized_from_archive: normalized_from_archive.c gen.o hash.o ai_constant.h
 ai: ai.c gen.o liblwneuralnet.a ai_constant.h
 
 train: train.c gen.o liblwneuralnet.a ai_constant.h
+
+compute_error_rate: compute_error_rate.c gen.o liblwneuralnet.a ai_constant.h
 
 try: try.c gen.o liblwneuralnet.a ai_constant.h
 
