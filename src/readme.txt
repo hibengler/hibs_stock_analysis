@@ -1,3 +1,45 @@
+OK so brute force doesn't work. 
+1. correlate - that doesnt work > corr.dat
+2. sort <corr.dat | ./adamize >roster.dat
+3. make companies.dat just have the companies we care about.
+./archive_to_ticker <simple.csv | ./normalize >m
+./archive_to_ticker <data/20040401.csv | ./normalize >n
+./bayes2 m <n
+
+
+--------------------------------------------------------------------------
+Brute force.
+Simplify things - have the following
+m t w r f 9:00 9:30 10:00 10:30 11:00 11:30 12:00 12:30 1:00 1:30 2:00 2:30 3:00 3:30 4:00 4:30 5:00 5:30 6:00
+-1 or 1    1    2   3     4      5    6      7     8     9    10   11   12   13   14   15   16   17   18   19
+
+Well,  we can try it without that for now. This way we can s hare the normalize program.
+archive_to_tickers - generates data/SYMBOL.flr - it calls normalizes
+Then we need a new creator to create the new inputs
+And a new trainer - reads a symbol
+
+
+1.  awk -F ',' <simple.csv '{print $2;}' | head -20000 | sort -u > companies.dat
+2. ulimit -n 8192
+3. archive_to_tickers <simple.csv
+4.  awk <companies.dat \
+'{print "./normalizes <traindata/" $1 ".flr >traindata/" $1 ".flt";}' | bash
+5.  awk <companies.dat \
+'{print "./trains " $1 ;}' | bash
+6. ./archive_to_ticker <data/test2.csv | ./normalize  | ./tries
+{
+cat data/20040331.csv
+snobol4 -b until12.sno <data/20040401.csv
+}  | ./archive_to_ticker | ./normalize  | ./tries
+
+
+Note - there was a bug in normalizer that skewed everythign.  
+The simple 1-1-1 correlation works the best,  but it is not very good.
+
+
+
+
+-----------------------------------------------------------------------------------------------
 The status - it is a mess. I cnnot get correlat to run - it returns bad valuess for the numebr of seconds after a  while.
 
 But I have a new idea- listen for the raindrops as they make waves,  but where in the pond do the raindrops lie?

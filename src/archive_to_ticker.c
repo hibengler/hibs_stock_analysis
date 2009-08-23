@@ -246,12 +246,13 @@ for (i=0;i<number_full_companies;i++) {
 
 
 for (h=0;h<number_companies;h++) {
-  for (i=0;i<number_full_companies;i++) {
     struct company *c;
     int pos;
     int j;
+    
+    i = hash_find(companies[h]); 
     c=full_companies+i;
-    if (strcmp(companies[h],c->symbol)==0) {
+    if (i!= -1) {
       double point;
       double volume;
       float data[2];
@@ -265,7 +266,6 @@ for (h=0;h<number_companies;h++) {
       fwrite((void *)data,sizeof(float),1,outfile);
       }
     }
-  }
 //fprintf(stderr,"\n");
 return(0);
 }

@@ -4,6 +4,11 @@ Inputs:
 	corr.dat
 Outputs:
 	the.net
+V1.7 there was a bug in normalize that has everything normalized to the first value.  This explains alot.
+our conformance is better than ever before - with errors hovering around 0.7 but thy always hover and don't train.
+So that makes me think to try the 5 variables approach yet again.
+Things were mich more normal - PBG up 2% it said. and it did go up about 1% a while later.
+
 
 V1.6 - back to V1.1
 

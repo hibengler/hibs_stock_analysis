@@ -104,6 +104,11 @@ while (fread((void *)current,sizeof(float),number_companies,stdin)) {
       }
     }
   fwrite((void *)delta,sizeof(float),number_companies,stdout);
+  {float *t;
+  t=current;
+  current=previous;
+  previous=t;
+  }
   }
 
 

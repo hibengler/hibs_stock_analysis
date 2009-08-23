@@ -148,10 +148,15 @@ for (i=counter;i<counter+13;i++) {
 */
 {
 int from;int to;
+int skippies=0;
+int skippy[1000];
 from = counter-1;
-to = counter;
+to = counter+13-1;
 int best;
 float bestscore;
+
+for (skippies=0;skippies<1000;skippies++) {
+
 bestscore=-1000.f;
 best=-1;
 
@@ -162,8 +167,16 @@ for (i=0;i<number_companies;i++) {
       score += pointer[j][i];
 
       if (score > bestscore) {
-        bestscore = score;
-        best = i;
+         for (k=0;k<skippies;k++) {
+            if (skippy[k]==i) {
+              k=-1;
+              break;
+              }
+            }
+         if (k==skippies) {
+             bestscore = score;
+             best = i;
+             }
         }
       }
     }
@@ -175,6 +188,8 @@ fprintf(stderr,"%s %lf percent\n",companies[best],(double)(exp(bestscore/5.0)*10
     fprintf(stderr,"%f ",(double)(exp(score/5.0)*100. - 100.));
     }
   fprintf(stderr,"\n");
+  skippy[skippies] = best;
+}
 }
 
 exit(0);

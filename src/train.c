@@ -199,7 +199,7 @@ free(current);
 
 #define PASS1 401  
 net = net_bload("the.net");
-net_set_learning_rate(net,0.001);
+net_set_learning_rate(net,0.0002);
  for (j=0;j<20;j++) {
   for (i=0;i<PASS1;i++) {
     float average;
