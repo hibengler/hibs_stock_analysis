@@ -1,4 +1,5 @@
-BROOKDIR = ../../../brook
+#BROOKDIR = ../../../brook
+BROOKDIR = /usr/local/Brook-1.4
 BRCCFLAGS = 
 
 EXECUTABLE = test2
